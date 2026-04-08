@@ -26,7 +26,7 @@ def _get_db():
     retry_backoff=True,
     retry_jitter=True,
 )
-def score_single_contact(self, contact_id: str, run_id: str | None = None, is_shadow: bool = False):
+def score_single_contact(self, contact_id: str, run_id: str | None = None, is_shadow: bool = False, use_ml_model: bool = False):
     """Score a single contact and persist the result."""
     from sqlalchemy import select
     from app.models.contact import Contact
@@ -56,7 +56,17 @@ def score_single_contact(self, contact_id: str, run_id: str | None = None, is_sh
             days_since_last_activity=f.days_since_last_activity if f else 999,
         )
 
-        result = score_contact(fv)
+        # Use ML model if requested and champion is available
+        if use_ml_model:
+            from app.services.ml_scoring_engine import score_contact_ml, get_champion_model_path
+            champion = get_champion_model_path()
+            if champion:
+                artifact_path, model_version = champion
+                result = score_contact_ml(fv, artifact_path, model_version)
+            else:
+                result = score_contact(fv)
+        else:
+            result = score_contact(fv)
 
         score = LeadScore(
             id=str(uuid.uuid4()),
@@ -104,7 +114,13 @@ def score_single_contact(self, contact_id: str, run_id: str | None = None, is_sh
     max_retries=1,
     soft_time_limit=600,
 )
-def run_scoring_batch(self, run_id: str | None = None, filter_segment: str | None = None, is_shadow: bool = False):
+def run_scoring_batch(
+    self,
+    run_id: str | None = None,
+    filter_segment: str | None = None,
+    is_shadow: bool = False,
+    use_ml_model: bool = False,
+):
     """
     Full batch scoring pass. Creates a ScoringRun record, then
     fans out score_single_contact tasks for each contact.
@@ -156,11 +172,38 @@ def run_scoring_batch(self, run_id: str | None = None, filter_segment: str | Non
 
         # Fan out per-contact tasks
         for cid in contact_ids:
-            score_single_contact.delay(contact_id=cid, run_id=run_id, is_shadow=is_shadow)
+            score_single_contact.delay(
+                contact_id=cid, run_id=run_id, is_shadow=is_shadow, use_ml_model=use_ml_model
+            )
 
         return {"status": "dispatched", "run_id": run_id, "total": len(contact_ids)}
     except Exception as exc:
         db.rollback()
         db.close()
         logger.error("scoring_batch_failed", error=str(exc), exc_info=True)
+        raise
+
+
+@app.task(
+    name="workers.tasks.scoring.retrain_ml_model",
+    bind=True,
+    max_retries=1,
+    soft_time_limit=1800,
+)
+def retrain_ml_model(self, min_rows: int = 200, promote: bool = False):
+    """
+    Periodic task: retrain XGBoost model v2 from latest conversion data.
+    By default registers as shadow (promote=False).
+    Promote to champion via the model registry API.
+    """
+    try:
+        from workers.training.train_model import train
+        version = train(min_rows=min_rows, shadow=not promote, promote=promote)
+        logger.info("ml_model_retrained", version=version, promote=promote)
+        return {"status": "ok", "version": version}
+    except ValueError as exc:
+        logger.warning("ml_retrain_skipped", reason=str(exc))
+        return {"status": "skipped", "reason": str(exc)}
+    except Exception as exc:
+        logger.error("ml_retrain_failed", error=str(exc), exc_info=True)
         raise

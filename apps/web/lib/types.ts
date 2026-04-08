@@ -84,3 +84,84 @@ export interface ScoreSimulateResponse {
   feature_contributions: Record<string, number>;
   model_version: string;
 }
+
+export interface Conversion {
+  id: string;
+  contact_id: string;
+  converted_at: string;
+  deal_value: number | null;
+  days_to_close: number | null;
+  plan_tier: string | null;
+  score_at_conversion: number | null;
+  tier_at_conversion: PriorityTier | null;
+  model_version_at_conversion: string | null;
+  source: string;
+  crm_deal_id: string | null;
+  created_at: string;
+}
+
+export interface TierAccuracy {
+  tier: PriorityTier;
+  total_leads: number;
+  converted: number;
+  precision: number;
+  avg_score: number;
+  avg_deal_value: number | null;
+  avg_days_to_close: number | null;
+}
+
+export interface ModelAccuracyReport {
+  model_version: string;
+  total_scored: number;
+  total_converted: number;
+  overall_conversion_rate: number;
+  tiers: TierAccuracy[];
+  generated_at: string;
+}
+
+export interface Webhook {
+  id: string;
+  name: string;
+  url: string;
+  events: string;
+  tier_filter: string | null;
+  status: "active" | "paused" | "disabled";
+  total_deliveries: number;
+  successful_deliveries: number;
+  failed_deliveries: number;
+  last_triggered_at: string | null;
+  created_at: string;
+}
+
+export interface CrmConnection {
+  id: string;
+  crm_type: "hubspot" | "salesforce";
+  name: string;
+  org_id: string | null;
+  instance_url: string | null;
+  is_active: boolean;
+  sync_direction: string;
+  last_inbound_sync_at: string | null;
+  last_outbound_sync_at: string | null;
+  last_sync_error: string | null;
+  total_records_synced: number;
+  created_at: string;
+}
+
+export interface ModelRegistryEntry {
+  id: string;
+  version: string;
+  algorithm: string;
+  stage: "training" | "shadow" | "champion" | "archived";
+  training_rows: number | null;
+  positive_rate: number | null;
+  precision_hot: number | null;
+  recall_hot: number | null;
+  roc_auc: number | null;
+  f1_score: number | null;
+  feature_importances: Record<string, number> | null;
+  trained_by: string | null;
+  trained_at: string | null;
+  promoted_at: string | null;
+  created_at: string;
+}

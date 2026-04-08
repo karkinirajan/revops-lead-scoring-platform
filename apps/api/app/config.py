@@ -77,6 +77,23 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 100
     rate_limit_burst: int = 200
 
+    # Salesforce OAuth
+    salesforce_client_id: str = ""
+    salesforce_client_secret: str = ""
+    salesforce_redirect_uri: str = ""
+    salesforce_login_url: str = "https://login.salesforce.com"
+
+    # HubSpot webhook secret (for signature verification)
+    hubspot_webhook_secret: str = ""
+
+    # AI Intelligence (Claude API)
+    anthropic_api_key: str = ""
+    ai_intelligence_cache_ttl_seconds: int = 21600   # 6 hours
+    ai_intelligence_rate_limit_per_minute: int = 10
+
+    # ML Model artifacts directory
+    ml_models_dir: str = "data/models"
+
     @field_validator("cors_origins", mode="before")
     @classmethod
     def parse_cors_origins(cls, v: str) -> str:

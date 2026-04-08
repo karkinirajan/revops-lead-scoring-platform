@@ -84,6 +84,25 @@ app.conf.beat_schedule = {
         "schedule": 1800.0,  # every 30 min
         "options": {"queue": "dlq"},
     },
+    # Webhook retry sweep — re-queue failed deliveries
+    "webhook-retry-sweep": {
+        "task": "workers.tasks.webhooks.retry_failed_webhooks",
+        "schedule": 1800.0,  # every 30 min
+        "options": {"queue": "sync"},
+    },
+    # Shadow ML scoring — run v2 model alongside v1 every hour
+    "shadow-ml-scoring": {
+        "task": "workers.tasks.scoring.run_scoring_batch",
+        "schedule": 3600.0,
+        "kwargs": {"filter_segment": None, "is_shadow": True, "use_ml_model": True},
+        "options": {"queue": "scoring"},
+    },
+    # Weekly model retraining (Sunday 2am UTC)
+    "weekly-model-retrain": {
+        "task": "workers.tasks.scoring.retrain_ml_model",
+        "schedule": 604800.0,  # every 7 days
+        "options": {"queue": "scoring"},
+    },
 }
 
 # Auto-discover tasks
