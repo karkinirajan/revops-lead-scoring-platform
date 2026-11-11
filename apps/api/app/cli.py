@@ -9,12 +9,12 @@ Usage:
     python -m app.cli sync-hubspot --csv data/processed/daily_top_50.csv
     python -m app.cli seed
 """
+
 from __future__ import annotations
 
 import csv
-import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
@@ -27,12 +27,23 @@ console = Console()
 
 def _get_db():
     from app.database import SessionLocal
+
     return SessionLocal()
+
+
+_FORMULA_STARTS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def csv_safe(value: object) -> str:
+    """A cell value that a spreadsheet will show as text: one that starts like a formula gets a leading apostrophe (names and emails come from CRMs)."""
+    text = "" if value is None else str(value)
+    return "'" + text if text.startswith(_FORMULA_STARTS) else text
 
 
 # ---------------------------------------------------------------------------
 # ingest
 # ---------------------------------------------------------------------------
+
 
 @app.command("ingest")
 def ingest(
@@ -40,8 +51,9 @@ def ingest(
     batch_size: int = typer.Option(500, "--batch-size"),
 ):
     """Ingest raw files from a local directory into the raw_events table."""
-    from app.models.ingestion import RawEvent
     import json
+
+    from app.models.ingestion import RawEvent
 
     db = _get_db()
     files = list(source_dir.glob("**/*.json")) + list(source_dir.glob("**/*.csv"))
@@ -69,7 +81,7 @@ def ingest(
                 operation=rec.get("operation", "insert"),
                 schema_version=int(rec.get("schema_version", 1)),
                 raw_payload=rec if isinstance(rec, dict) else dict(rec),
-                ingested_at=datetime.now(timezone.utc),
+                ingested_at=datetime.now(UTC),
             )
             batch.append(ev)
             if len(batch) >= batch_size:
@@ -91,11 +103,13 @@ def ingest(
 # build-views
 # ---------------------------------------------------------------------------
 
+
 @app.command("build-views")
 def build_views():
     """Trigger incremental feature recompute for all contacts with unprocessed events."""
     try:
         from workers.tasks.features import recompute_all_features
+
         result = recompute_all_features.delay()
         console.print(f"[green]Feature recompute task dispatched. Task ID: {result.id}[/green]")
     except Exception as e:
@@ -105,8 +119,8 @@ def build_views():
 
 def _sync_build_views():
     from sqlalchemy import select
+
     from app.models.contact import Contact, ContactFeature
-    from app.models.ingestion import RawEvent
 
     db = _get_db()
     contacts = db.scalars(select(Contact)).all()
@@ -126,6 +140,7 @@ def _sync_build_views():
 # score-leads
 # ---------------------------------------------------------------------------
 
+
 @app.command("score-leads")
 def score_leads(
     model_version: str = typer.Option("", "--model-version"),
@@ -135,10 +150,13 @@ def score_leads(
 ):
     """Run a full scoring pass over all contacts."""
     from sqlalchemy import select
-    from app.models.contact import Contact, ContactFeature
-    from app.models.scoring import LeadScore, ScoringRun, ScoringRunStatus
-    from app.services.scoring_engine import FeatureVector, score_contact, SCORE_CONFIG
+
     from app.config import get_settings
+    from app.models.contact import Contact
+    from app.models.scoring import ScoringRun, ScoringRunStatus
+    from app.services.lead_scoring import feature_vector, latest_live_score, new_score
+    from app.services.scoring_engine import score_contact
+    from app.services.webhook_service import notify_score_change
 
     settings = get_settings()
     mv = model_version or settings.scoring_model_version
@@ -151,7 +169,7 @@ def score_leads(
         filter_segment=segment,
         is_shadow=shadow,
         triggered_by="cli",
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
     )
     db.add(run)
     db.commit()
@@ -159,6 +177,7 @@ def score_leads(
     q = select(Contact)
     if segment:
         from app.models.company import Company
+
         q = q.join(Company, Contact.company_id == Company.id).where(Company.size_tier == segment)
 
     contacts = db.scalars(q).all()
@@ -171,41 +190,14 @@ def score_leads(
     for i in range(0, len(contacts), batch_size):
         chunk = contacts[i : i + batch_size]
         scores = []
+        changes = []  # what the subscribers are told about once these scores are saved
         for contact in chunk:
             try:
-                f = contact.features
-                fv = FeatureVector(
-                    api_calls_7d=f.api_calls_7d if f else 0,
-                    api_calls_30d=f.api_calls_30d if f else 0,
-                    page_views_7d=f.page_views_7d if f else 0,
-                    pricing_page_visited=f.pricing_page_visited if f else False,
-                    email_opens_7d=f.email_opens_7d if f else 0,
-                    email_clicks_7d=f.email_clicks_7d if f else 0,
-                    docs_page_visits_7d=f.docs_page_visits_7d if f else 0,
-                    demo_requested=f.demo_requested if f else False,
-                    free_trial_active=f.free_trial_active if f else False,
-                    integration_connected=f.integration_connected if f else False,
-                    integrations_count=f.integrations_count if f else 0,
-                    sessions_7d=f.sessions_7d if f else 0,
-                    days_since_last_activity=f.days_since_last_activity if f else 999,
-                )
-                result = score_contact(fv)
-                score = LeadScore(
-                    id=str(uuid.uuid4()),
-                    contact_id=contact.id,
-                    company_id=contact.company_id,
-                    scoring_run_id=run.id,
-                    lead_score=result.lead_score,
-                    priority_tier=result.priority_tier,
-                    model_version=result.model_version,
-                    score_reason=result.score_reason,
-                    feature_contributions=result.feature_contributions,
-                    recommended_action=result.recommended_action,
-                    is_shadow=shadow,
-                    scored_at=datetime.now(timezone.utc),
-                    feature_freshness_at=f.computed_at if f else None,
-                )
+                fv = feature_vector(contact)
+                previous = latest_live_score(db, contact.id)
+                score = new_score(contact, fv, score_contact(fv), run_id=run.id, is_shadow=shadow)
                 scores.append(score)
+                changes.append((contact, previous, score, fv.demo_requested))
                 scored += 1
             except Exception as e:
                 errors += 1
@@ -213,9 +205,12 @@ def score_leads(
 
         db.add_all(scores)
         db.commit()
+        if not shadow:
+            for contact, previous, score, demo_requested in changes:
+                notify_score_change(db, contact, previous, score, demo_requested)
         console.print(f"  Scored {min(i + batch_size, len(contacts))}/{len(contacts)}...")
 
-    end = datetime.now(timezone.utc)
+    end = datetime.now(UTC)
     run.status = ScoringRunStatus.COMPLETED if errors == 0 else ScoringRunStatus.PARTIAL
     run.scored_count = scored
     run.error_count = errors
@@ -224,12 +219,15 @@ def score_leads(
     db.commit()
     db.close()
 
-    console.print(f"[green]Scoring complete: {scored} scored, {errors} errors. Duration: {run.duration_seconds:.1f}s[/green]")
+    console.print(
+        f"[green]Scoring complete: {scored} scored, {errors} errors. Duration: {run.duration_seconds:.1f}s[/green]"
+    )
 
 
 # ---------------------------------------------------------------------------
 # export-daily-list
 # ---------------------------------------------------------------------------
+
 
 @app.command("export-daily-list")
 def export_daily_list(
@@ -239,8 +237,9 @@ def export_daily_list(
 ):
     """Export the top N ranked leads to CSV."""
     from sqlalchemy import func, select
-    from app.models.contact import Contact
+
     from app.models.company import Company
+    from app.models.contact import Contact
     from app.models.scoring import LeadScore
 
     db = _get_db()
@@ -269,23 +268,35 @@ def export_daily_list(
     with out.open("w", newline="") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["contact_id", "email", "full_name", "company", "lead_score", "priority_tier",
-                        "score_reason", "recommended_action", "model_version", "scored_at"],
+            fieldnames=[
+                "contact_id",
+                "email",
+                "full_name",
+                "company",
+                "lead_score",
+                "priority_tier",
+                "score_reason",
+                "recommended_action",
+                "model_version",
+                "scored_at",
+            ],
         )
         writer.writeheader()
         for score, contact, company in rows:
-            writer.writerow({
-                "contact_id": contact.id,
-                "email": contact.email,
-                "full_name": contact.full_name,
-                "company": company.name if company else "",
-                "lead_score": score.lead_score,
-                "priority_tier": score.priority_tier,
-                "score_reason": score.score_reason or "",
-                "recommended_action": score.recommended_action or "",
-                "model_version": score.model_version,
-                "scored_at": score.scored_at.isoformat(),
-            })
+            writer.writerow(
+                {
+                    "contact_id": contact.id,
+                    "email": csv_safe(contact.email),
+                    "full_name": csv_safe(contact.full_name),
+                    "company": csv_safe(company.name if company else ""),
+                    "lead_score": score.lead_score,
+                    "priority_tier": score.priority_tier,
+                    "score_reason": csv_safe(score.score_reason),
+                    "recommended_action": csv_safe(score.recommended_action),
+                    "model_version": score.model_version,
+                    "scored_at": score.scored_at.isoformat(),
+                }
+            )
 
     console.print(f"[green]Exported {len(rows)} leads to {out}[/green]")
 
@@ -306,6 +317,7 @@ def export_daily_list(
 # sync-hubspot
 # ---------------------------------------------------------------------------
 
+
 @app.command("sync-hubspot")
 def sync_hubspot(
     csv_file: Path = typer.Option(..., "--csv"),
@@ -325,20 +337,21 @@ def sync_hubspot(
 # seed
 # ---------------------------------------------------------------------------
 
+
 @app.command("seed")
 def seed(count: int = typer.Option(100, "--count", help="Number of fake contacts to generate")):
     """Seed the database with synthetic data for local development."""
     try:
         from faker import Faker
     except ImportError:
-        console.print("[red]faker not installed. Run: pip install faker[/red]")
-        raise typer.Exit(1)
+        console.print("[red]faker not installed. Run: uv sync --group dev[/red]")
+        raise typer.Exit(1) from None
 
+    from app.auth.jwt import hash_password
+    from app.config import get_settings
     from app.models.company import Company
     from app.models.contact import Contact, ContactFeature
-    from app.auth.jwt import hash_password
     from app.models.user import User
-    from app.config import get_settings
 
     settings = get_settings()
     fake = Faker()
@@ -346,13 +359,15 @@ def seed(count: int = typer.Option(100, "--count", help="Number of fake contacts
 
     # Admin user
     if not db.query(User).filter_by(email=settings.admin_email).first():
-        db.add(User(
-            id=str(uuid.uuid4()),
-            email=settings.admin_email,
-            hashed_password=hash_password(settings.admin_password),
-            full_name="Admin User",
-            role="admin",
-        ))
+        db.add(
+            User(
+                id=str(uuid.uuid4()),
+                email=settings.admin_email,
+                hashed_password=hash_password(settings.admin_password),
+                full_name="Admin User",
+                role="admin",
+            )
+        )
         db.commit()
         console.print(f"[green]Admin user created: {settings.admin_email}[/green]")
 
@@ -376,7 +391,7 @@ def seed(count: int = typer.Option(100, "--count", help="Number of fake contacts
     db.commit()
 
     # Contacts + features
-    for i in range(count):
+    for _ in range(count):
         company = fake.random_element(companies) if companies else None
         contact = Contact(
             id=str(uuid.uuid4()),
@@ -387,7 +402,9 @@ def seed(count: int = typer.Option(100, "--count", help="Number of fake contacts
             last_name=fake.last_name(),
             job_title=fake.job(),
             company_id=company.id if company else None,
-            lifecycle_stage=fake.random_element(["subscriber", "lead", "marketing_qualified_lead", "sales_qualified_lead"]),
+            lifecycle_stage=fake.random_element(
+                ["subscriber", "lead", "marketing_qualified_lead", "sales_qualified_lead"]
+            ),
         )
         db.add(contact)
         db.flush()
@@ -415,3 +432,43 @@ def seed(count: int = typer.Option(100, "--count", help="Number of fake contacts
 
 if __name__ == "__main__":
     app()
+
+
+# ---------------------------------------------------------------------------
+# users
+# ---------------------------------------------------------------------------
+
+
+@app.command("set-password")
+def set_password(
+    email: str = typer.Option(..., "--email", help="The user's email address"),
+    password: str = typer.Option(
+        ..., prompt="New password", hide_input=True, confirmation_prompt=True, help="Asked for, twice, and not echoed"
+    ),
+):
+    """Set a user's password. There is no password-change endpoint, so this is how an admin's password is changed (run it where the database is reachable)."""
+    from sqlalchemy import func
+
+    from app.auth.jwt import hash_password
+    from app.models.user import User
+    from app.schemas.auth import validate_password
+
+    try:
+        validate_password(password)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from None
+
+    db = _get_db()
+    try:
+        user = db.query(User).filter(func.lower(User.email) == email.strip().lower()).first()
+        if user is None:
+            console.print(f"[red]No user with the email {email.strip()}[/red]")
+            raise typer.Exit(1)
+        address = user.email
+        user.hashed_password = hash_password(password)
+        db.commit()
+    finally:
+        db.close()
+    console.print(f"[green]Password set for {address}.[/green]")
+    console.print("Sign-ins that already exist stay valid until they expire; change JWT_SECRET_KEY to end them all.")

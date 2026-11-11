@@ -15,16 +15,17 @@ Auth:
   - OAuth2 JWT Bearer flow (for production)
   - Refresh token handling included
 """
+
 from __future__ import annotations
 
 import time
 import uuid
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
 
 import httpx
 import structlog
 
+from app.security.urls import ensure_salesforce_instance_url
 from workers.connectors.base import BaseConnector, ConnectorRecord
 
 logger = structlog.get_logger(__name__)
@@ -33,18 +34,33 @@ _SF_API_VERSION = "v59.0"
 
 # Salesforce Contact fields to pull (SOQL SELECT list)
 _CONTACT_FIELDS = [
-    "Id", "Email", "FirstName", "LastName", "Title",
-    "AccountId", "LeadSource", "HasOptedOutOfEmail",
-    "LastModifiedDate", "CreatedDate",
+    "Id",
+    "Email",
+    "FirstName",
+    "LastName",
+    "Title",
+    "AccountId",
+    "LeadSource",
+    "HasOptedOutOfEmail",
+    "LastModifiedDate",
+    "CreatedDate",
     "NumberOfEmployees__c",  # custom field example
 ]
 
 # Salesforce Lead fields
 _LEAD_FIELDS = [
-    "Id", "Email", "FirstName", "LastName", "Title",
-    "Company", "Industry", "NumberOfEmployees",
-    "LeadSource", "Status",
-    "LastModifiedDate", "CreatedDate",
+    "Id",
+    "Email",
+    "FirstName",
+    "LastName",
+    "Title",
+    "Company",
+    "Industry",
+    "NumberOfEmployees",
+    "LeadSource",
+    "Status",
+    "LastModifiedDate",
+    "CreatedDate",
 ]
 
 
@@ -59,7 +75,9 @@ class SalesforceClient:
         client_id: str | None = None,
         client_secret: str | None = None,
     ):
-        self.instance_url = instance_url.rstrip("/")
+        self.instance_url = ensure_salesforce_instance_url(
+            instance_url
+        )  # the access token (and client secret) are sent here
         self.access_token = access_token
         self.refresh_token = refresh_token
         self.client_id = client_id
@@ -159,7 +177,7 @@ class SalesforceClient:
                 "RevOps_Lead_Score__c": c.get("score"),
                 "RevOps_Priority_Tier__c": c.get("tier"),
                 "RevOps_Score_Reason__c": c.get("reason", "")[:255],
-                "RevOps_Scored_At__c": c.get("scored_at", datetime.now(timezone.utc).isoformat()),
+                "RevOps_Scored_At__c": c.get("scored_at", datetime.now(UTC).isoformat()),
             }
             for c in contacts
         ]
@@ -169,7 +187,8 @@ class SalesforceClient:
         for i in range(0, len(records), batch_size):
             chunk = records[i : i + batch_size]
             resp = self._patch_composite(chunk)
-            for item in resp if isinstance(resp, list) else []:
+            items: list[dict] = resp if isinstance(resp, list) else []
+            for item in items:
                 if item.get("success"):
                     results["success"] += 1
                 else:
@@ -192,12 +211,7 @@ class SalesforceContactConnector(BaseConnector):
         if watermark:
             where = f"WHERE LastModifiedDate > {watermark}"
 
-        soql = (
-            f"SELECT {', '.join(_CONTACT_FIELDS)} "
-            f"FROM Contact {where} "
-            f"ORDER BY LastModifiedDate ASC "
-            f"LIMIT 10000"
-        )
+        soql = f"SELECT {', '.join(_CONTACT_FIELDS)} FROM Contact {where} ORDER BY LastModifiedDate ASC LIMIT 10000"
         records = self.client.query(soql)
         logger.info("salesforce_fetched_contacts", count=len(records), watermark=watermark)
         return records
@@ -259,7 +273,7 @@ class SalesforceSyncService:
                 "score": c["lead_score"],
                 "tier": c["priority_tier"],
                 "reason": c.get("score_reason", ""),
-                "scored_at": c.get("scored_at", datetime.now(timezone.utc).isoformat()),
+                "scored_at": c.get("scored_at", datetime.now(UTC).isoformat()),
             }
             for c in contacts
             if c.get("salesforce_id")

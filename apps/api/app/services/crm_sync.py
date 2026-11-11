@@ -1,10 +1,11 @@
 """HubSpot CRM sync service — batch upserts with idempotency and retry tracking."""
+
 from __future__ import annotations
 
 import hashlib
 import json
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 import structlog
@@ -168,7 +169,7 @@ def _log_sync(db_session, contacts: list[dict], status: str, error: str | None, 
             error_message=error,
             payload_hash=hash_,
             job_id=job_id,
-            synced_at=datetime.now(timezone.utc),
+            synced_at=datetime.now(UTC),
         )
         db_session.add(entry)
     db_session.commit()

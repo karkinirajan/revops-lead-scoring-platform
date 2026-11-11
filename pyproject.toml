@@ -1,0 +1,25 @@
+# Repository root: a uv workspace holding the API and the Celery workers under one lock file (`uv.lock`).
+#   uv sync --all-packages --all-extras     everything, including the ML extra
+#   uv run --package revops-api pytest      the API tests
+[tool.uv.workspace]
+members = ["apps/api", "workers"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = ["apps/web"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+ignore = ["B008", "E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app", "workers"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]
+mypy_path = "apps/api"
+explicit_package_bases = true

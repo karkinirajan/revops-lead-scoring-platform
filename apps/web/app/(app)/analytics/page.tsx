@@ -1,23 +1,17 @@
 import { StatCard } from "@/components/ui/StatCard";
 import { TierBadge } from "@/components/ui/TierBadge";
-
-const API = process.env.API_INTERNAL_URL ?? "http://localhost:8000";
+import { type Bucket, barHeightPct, bucketColor, bucketStart, tallestBucket } from "@/lib/distribution";
+import { describeModelScope } from "@/lib/format";
+import { apiFetch } from "@/lib/server/api";
+import type { ConversionList, ModelAccuracy, ScoreDistribution } from "@/lib/types";
 
 async function getAnalyticsData() {
-  try {
-    const [accuracyRes, distRes, conversionsRes] = await Promise.all([
-      fetch(`${API}/api/v1/analytics/model-accuracy`, { next: { revalidate: 120 } }),
-      fetch(`${API}/api/v1/analytics/score-distribution`, { next: { revalidate: 120 } }),
-      fetch(`${API}/api/v1/analytics/conversions?page_size=10`, { next: { revalidate: 60 } }),
-    ]);
-    return {
-      accuracy: accuracyRes.ok ? await accuracyRes.json() : null,
-      distribution: distRes.ok ? await distRes.json() : null,
-      conversions: conversionsRes.ok ? await conversionsRes.json() : null,
-    };
-  } catch {
-    return { accuracy: null, distribution: null, conversions: null };
-  }
+  const [accuracy, distribution, conversions] = await Promise.all([
+    apiFetch<ModelAccuracy>("/analytics/model-accuracy"),
+    apiFetch<ScoreDistribution>("/analytics/score-distribution"),
+    apiFetch<ConversionList>("/analytics/conversions?page_size=10"),
+  ]);
+  return { accuracy, distribution, conversions };
 }
 
 export default async function AnalyticsPage() {
@@ -30,14 +24,10 @@ export default async function AnalyticsPage() {
     COLD: "var(--text-faint)",
   };
 
-  const maxBucketCount =
-    distribution?.buckets?.reduce(
-      (m: number, b: { count: number }) => Math.max(m, b.count),
-      1
-    ) ?? 1;
+  const maxBucketCount = tallestBucket(distribution?.buckets);
 
   return (
-    <div className="p-8 max-w-6xl mx-auto">
+    <div className="p-4 sm:p-8 max-w-6xl mx-auto">
       <div className="mb-8">
         <h1 className="text-2xl font-bold" style={{ color: "var(--text)" }}>
           Analytics
@@ -66,18 +56,14 @@ export default async function AnalyticsPage() {
             accent="var(--green)"
             sub="leads → customers"
           />
-          <StatCard
-            label="Model Version"
-            value={accuracy.model_version ?? "—"}
-            sub="active scoring model"
-          />
+          <StatCard label="Model Version" {...describeModelScope(accuracy.model_version)} />
         </div>
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
         {/* Tier precision table */}
         <section
-          className="rounded-xl border overflow-hidden"
+          className="rounded-xl border overflow-x-auto"
           style={{ background: "var(--surface-raised)", borderColor: "var(--border)" }}
         >
           <div className="px-5 py-4 border-b" style={{ borderColor: "var(--border)" }}>
@@ -92,7 +78,7 @@ export default async function AnalyticsPage() {
           {!accuracy?.tiers?.length ? (
             <div className="px-5 py-8 text-center text-sm" style={{ color: "var(--text-muted)" }}>
               No conversion data yet.{" "}
-              <a href="#record" className="underline" style={{ color: "var(--primary)" }}>
+              <a href="#record" className="underline" style={{ color: "var(--primary-fg)" }}>
                 Record conversions
               </a>{" "}
               to see precision metrics.
@@ -162,7 +148,7 @@ export default async function AnalyticsPage() {
 
         {/* Score distribution histogram */}
         <section
-          className="rounded-xl border overflow-hidden"
+          className="rounded-xl border overflow-x-auto"
           style={{ background: "var(--surface-raised)", borderColor: "var(--border)" }}
         >
           <div className="px-5 py-4 border-b" style={{ borderColor: "var(--border)" }}>
@@ -180,43 +166,21 @@ export default async function AnalyticsPage() {
                 No score data yet.
               </div>
             ) : (
-              <div className="flex items-end gap-1 h-32">
-                {distribution.buckets.map(
-                  (b: { range: string; count: number }, i: number) => {
-                    const pct = (b.count / maxBucketCount) * 100;
-                    const score = i * 10;
-                    const color =
-                      score >= 75
-                        ? "var(--hot)"
-                        : score >= 50
-                        ? "var(--yellow)"
-                        : score >= 25
-                        ? "var(--primary)"
-                        : "var(--text-faint)";
-                    return (
-                      <div
-                        key={b.range}
-                        className="flex-1 flex flex-col items-center gap-1"
-                        title={`${b.range}: ${b.count} leads`}
-                      >
-                        <span className="text-[9px]" style={{ color: "var(--text-faint)" }}>
-                          {b.count > 0 ? b.count : ""}
-                        </span>
-                        <div
-                          className="w-full rounded-sm transition-all"
-                          style={{
-                            height: `${Math.max(2, pct)}%`,
-                            background: color,
-                            opacity: 0.85,
-                          }}
-                        />
-                        <span className="text-[9px]" style={{ color: "var(--text-faint)" }}>
-                          {b.range.split("-")[0]}
-                        </span>
-                      </div>
-                    );
-                  }
-                )}
+              // each column fills the chart's height so that a bar's percentage height has something to be a percentage of
+              <div className="flex h-36 gap-1">
+                {distribution.buckets.map((b: Bucket) => (
+                  <div key={b.range} className="flex h-full flex-1 flex-col items-center gap-1" title={`${b.range}: ${b.count} leads`}>
+                    <span className="h-3 text-[10px] leading-3" style={{ color: "var(--text-faint)" }}>
+                      {b.count > 0 ? b.count : ""}
+                    </span>
+                    <div className="flex min-h-0 w-full flex-1 items-end">
+                      <div className="w-full rounded-sm" style={{ height: `${barHeightPct(b.count, maxBucketCount)}%`, background: bucketColor(bucketStart(b.range)), opacity: 0.85 }} />
+                    </div>
+                    <span className="text-[10px]" style={{ color: "var(--text-faint)" }}>
+                      {bucketStart(b.range)}
+                    </span>
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -225,7 +189,7 @@ export default async function AnalyticsPage() {
 
       {/* Recent conversions */}
       <section
-        className="rounded-xl border overflow-hidden"
+        className="rounded-xl border overflow-x-auto"
         style={{ background: "var(--surface-raised)", borderColor: "var(--border)" }}
         id="record"
       >
@@ -241,7 +205,7 @@ export default async function AnalyticsPage() {
               Deal-won events recorded from HubSpot or manual entry
             </p>
           </div>
-          <span className="text-xs px-2 py-1 rounded" style={{ background: "var(--surface-overlay)", color: "var(--text-muted)" }}>
+          <span className="text-xs px-2 py-1 rounded-sm" style={{ background: "var(--surface-overlay)", color: "var(--text-muted)" }}>
             {conversions?.total ?? 0} total
           </span>
         </div>
@@ -254,7 +218,7 @@ export default async function AnalyticsPage() {
             <p className="text-xs" style={{ color: "var(--text-faint)" }}>
               Configure a HubSpot deal-won webhook at{" "}
               <code
-                className="px-1 py-0.5 rounded text-xs"
+                className="px-1 py-0.5 rounded-sm text-xs"
                 style={{ background: "var(--surface-overlay)" }}
               >
                 POST /api/v1/analytics/conversions/hubspot

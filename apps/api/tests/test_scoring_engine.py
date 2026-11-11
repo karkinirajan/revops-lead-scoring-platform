@@ -2,9 +2,11 @@
 
 These are pure unit tests — no DB, no network.
 """
+
 import pytest
 
-from app.services.scoring_engine import FeatureVector, score_contact, PriorityTier
+from app.config import get_settings
+from app.services.scoring_engine import FeatureVector, PriorityTier, score_contact, tier_for
 
 
 def make_features(**kwargs) -> FeatureVector:
@@ -74,10 +76,16 @@ class TestRecencyDecay:
 
 class TestPriorityTiers:
     def test_hot_tier(self):
-        result = score_contact(make_features(
-            api_calls_7d=20, demo_requested=True, pricing_page_visited=True,
-            email_clicks_7d=3, free_trial_active=True, days_since_last_activity=2,
-        ))
+        result = score_contact(
+            make_features(
+                api_calls_7d=20,
+                demo_requested=True,
+                pricing_page_visited=True,
+                email_clicks_7d=3,
+                free_trial_active=True,
+                days_since_last_activity=2,
+            )
+        )
         assert result.priority_tier == PriorityTier.HOT
 
     def test_cold_tier_no_signals(self):
@@ -87,10 +95,17 @@ class TestPriorityTiers:
     def test_score_bounded_0_100(self):
         # Max out every signal
         extreme = make_features(
-            api_calls_7d=25, page_views_7d=100, email_clicks_7d=100,
-            email_opens_7d=100, demo_requested=True, pricing_page_visited=True,
-            free_trial_active=True, integration_connected=True, integrations_count=10,
-            sessions_7d=100, days_since_last_activity=1,
+            api_calls_7d=25,
+            page_views_7d=100,
+            email_clicks_7d=100,
+            email_opens_7d=100,
+            demo_requested=True,
+            pricing_page_visited=True,
+            free_trial_active=True,
+            integration_connected=True,
+            integrations_count=10,
+            sessions_7d=100,
+            days_since_last_activity=1,
         )
         result = score_contact(extreme)
         assert 0 <= result.lead_score <= 100
@@ -110,3 +125,37 @@ class TestExplainability:
     def test_model_version_present(self):
         result = score_contact(make_features())
         assert result.model_version == "1.0.0"
+
+
+class TestTierFor:
+    @pytest.mark.parametrize(
+        ("score", "tier"),
+        [(100, "HOT"), (75, "HOT"), (74, "WARM"), (50, "WARM"), (49, "COOL"), (25, "COOL"), (24, "COLD"), (0, "COLD")],
+    )
+    def test_the_default_boundaries(self, score, tier):
+        assert tier_for(score) == tier
+
+    def test_the_boundaries_are_the_settings(self, monkeypatch):
+        settings = get_settings()
+        monkeypatch.setattr(settings, "scoring_hot_threshold", 90)
+        monkeypatch.setattr(settings, "scoring_warm_threshold", 60)
+        monkeypatch.setattr(settings, "scoring_cool_threshold", 30)
+        assert [tier_for(n) for n in (95, 90, 89, 60, 59, 30, 29)] == [
+            "HOT",
+            "HOT",
+            "WARM",
+            "WARM",
+            "COOL",
+            "COOL",
+            "COLD",
+        ]
+
+    def test_the_formula_uses_them_too(self, monkeypatch):
+        features = FeatureVector(
+            api_calls_7d=20, demo_requested=True, free_trial_active=True, days_since_last_activity=1
+        )
+        score = score_contact(features).lead_score
+        assert score_contact(features).priority_tier == tier_for(score)
+        monkeypatch.setattr(get_settings(), "scoring_hot_threshold", score + 1)
+        monkeypatch.setattr(get_settings(), "scoring_warm_threshold", score)
+        assert score_contact(features).priority_tier == "WARM"  # the same score, now one below the hot boundary

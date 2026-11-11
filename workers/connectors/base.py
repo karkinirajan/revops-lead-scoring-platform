@@ -4,11 +4,12 @@ Base connector contract.
 All source connectors must implement this interface so the pipeline
 can treat HubSpot, Salesforce, CSV, and any future source uniformly.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 
@@ -81,6 +82,7 @@ class BaseConnector(ABC):
 
     def load_checkpoint(self) -> CheckpointState:
         from sqlalchemy import select
+
         from app.database import SessionLocal
         from app.models.ingestion import WorkerCheckpoint
 
@@ -99,8 +101,9 @@ class BaseConnector(ABC):
 
     def save_checkpoint(self, watermark: str, records_processed: int = 0, meta: dict | None = None) -> None:
         import uuid
-        from datetime import timezone
+
         from sqlalchemy import select
+
         from app.database import SessionLocal
         from app.models.ingestion import WorkerCheckpoint
 
@@ -111,7 +114,7 @@ class BaseConnector(ABC):
                 row = WorkerCheckpoint(id=str(uuid.uuid4()), connector_id=self.connector_id)
                 db.add(row)
             row.last_successful_watermark = watermark
-            row.last_run_at = datetime.now(timezone.utc if hasattr(datetime, "UTC") else None)
+            row.last_run_at = datetime.now(UTC if hasattr(datetime, "UTC") else None)
             row.last_run_status = "success"
             row.records_processed = records_processed
             row.meta = meta or {}
@@ -123,11 +126,12 @@ class BaseConnector(ABC):
 
     def publish(self, records: list[ConnectorRecord]) -> int:
         """Publish normalized records to the ingest queue. Returns count published."""
-        from workers.tasks.ingest import process_raw_event
         import uuid as _uuid
+        from datetime import datetime
+
         from app.database import SessionLocal
         from app.models.ingestion import RawEvent
-        from datetime import datetime, timezone
+        from workers.tasks.ingest import process_raw_event
 
         db = SessionLocal()
         published = 0
@@ -141,7 +145,7 @@ class BaseConnector(ABC):
                     operation=rec.operation,
                     schema_version=rec.schema_version,
                     event_time=rec.event_time,
-                    ingested_at=datetime.now(timezone.utc),
+                    ingested_at=datetime.now(UTC),
                     raw_payload=rec.raw_payload,
                     trace_id=rec.trace_id,
                 )
@@ -169,6 +173,7 @@ class BaseConnector(ABC):
     def run(self) -> dict:
         """Full connector run: fetch → normalize → publish → checkpoint."""
         import structlog
+
         log = structlog.get_logger(self.__class__.__name__)
 
         checkpoint = self.load_checkpoint()

@@ -8,11 +8,12 @@ Endpoints:
   POST /models/{id}/shadow      — set a model to shadow stage
   GET  /models/champion/features — feature importance for the current champion
 """
-from datetime import datetime, timezone
+
+from datetime import UTC, datetime
 from typing import Annotated
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -93,15 +94,13 @@ def promote_model(model_id: str, db: Annotated[Session, Depends(get_db)]):
         raise HTTPException(status_code=409, detail="Model is already champion")
 
     # Archive existing champion
-    existing = db.scalar(
-        select(ModelRegistry).where(ModelRegistry.stage == ModelStage.CHAMPION)
-    )
+    existing = db.scalar(select(ModelRegistry).where(ModelRegistry.stage == ModelStage.CHAMPION))
     if existing:
         existing.stage = ModelStage.ARCHIVED
-        existing.archived_at = datetime.now(timezone.utc)
+        existing.archived_at = datetime.now(UTC)
 
     model.stage = ModelStage.CHAMPION
-    model.promoted_at = datetime.now(timezone.utc)
+    model.promoted_at = datetime.now(UTC)
     db.commit()
 
     logger.info("model_promoted_to_champion", version=model.version)

@@ -1,19 +1,20 @@
-.PHONY: help up down logs migrate seed test lint format check api-dev worker-dev web-dev clean score ingest export sync
+.PHONY: help up down logs logs-api logs-worker migrate migrate-down migrate-new seed ingest build-views score export sync-hubspot \
+        api-dev worker-dev web-dev test test-api test-web lint format check mutation mutation-api mutation-web set-password clean install
 
 DOCKER_COMPOSE = docker compose
 API_DIR = apps/api
 WEB_DIR = apps/web
-WORKER_DIR = workers
+ALEMBIC = uv run --package revops-api alembic -c $(API_DIR)/alembic.ini
+CLI = uv run --package revops-api python -m app.cli
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
 # ---- Infrastructure ----
 up: ## Start all services (detached)
-	$(DOCKER_COMPOSE) up -d
+	$(DOCKER_COMPOSE) up -d --build
 	@echo "API   → http://localhost:8000/docs"
 	@echo "Web   → http://localhost:3000"
-	@echo "Flower→ http://localhost:5555"
 
 down: ## Stop all services
 	$(DOCKER_COMPOSE) down
@@ -27,80 +28,83 @@ logs-api: ## Tail API logs
 logs-worker: ## Tail worker logs
 	$(DOCKER_COMPOSE) logs -f worker
 
-# ---- Database ----
+# ---- Database (needs DATABASE_URL, e.g. from .env) ----
 migrate: ## Run Alembic migrations
-	cd $(API_DIR) && alembic upgrade head
+	$(ALEMBIC) upgrade head
 
-migrate-down: ## Rollback last migration
-	cd $(API_DIR) && alembic downgrade -1
+migrate-down: ## Roll back the last migration
+	$(ALEMBIC) downgrade -1
 
-migrate-new: ## Create new migration (usage: make migrate-new MSG="add foo table")
-	cd $(API_DIR) && alembic revision --autogenerate -m "$(MSG)"
+migrate-new: ## Create a migration (usage: make migrate-new MSG="add foo table")
+	$(ALEMBIC) revision --autogenerate -m "$(MSG)"
 
-seed: ## Seed database with test data
-	cd $(API_DIR) && python -m app.cli seed
+seed: ## Seed the database with synthetic data
+	$(CLI) seed
+
+set-password: ## Set a user's password (usage: make set-password EMAIL=someone@example.com)
+	@test -n "$(EMAIL)" || (echo "usage: make set-password EMAIL=someone@example.com"; exit 1)
+	$(CLI) set-password --email "$(EMAIL)"
 
 # ---- Pipeline CLI ----
-ingest: ## Run ingestion from local raw dir
-	cd $(API_DIR) && python -m app.cli ingest --source-dir ../../data/raw/
+ingest: ## Ingest raw files from data/raw/
+	$(CLI) ingest --source-dir data/raw/
 
-build-views: ## Rebuild feature materialized views
-	cd $(API_DIR) && python -m app.cli build-views
+build-views: ## Rebuild feature views
+	$(CLI) build-views
 
-score: ## Run full scoring pass
-	cd $(API_DIR) && python -m app.cli score-leads
+score: ## Run a full scoring pass
+	$(CLI) score-leads
 
-export: ## Export top 50 leads to CSV
-	cd $(API_DIR) && python -m app.cli export-daily-list --top-n 50 --out ../../data/processed/daily_top_50.csv
+export: ## Export the top 50 leads to CSV
+	$(CLI) export-daily-list --top-n 50 --out data/processed/daily_top_50.csv
 
-sync-hubspot: ## Sync top leads to HubSpot
-	cd $(API_DIR) && python -m app.cli sync-hubspot --csv ../../data/processed/daily_top_50.csv
+sync-hubspot: ## Push the exported leads to HubSpot
+	$(CLI) sync-hubspot --csv data/processed/daily_top_50.csv
 
 # ---- Development ----
-api-dev: ## Run API locally (without Docker)
-	cd $(API_DIR) && uvicorn app.main:app --reload --port 8000
+api-dev: ## Run the API locally (without Docker)
+	# From the repository root, as the Docker image runs it: `workers` (imported by the API to queue tasks) is found there, and `app` is the workspace install.
+	uv run --package revops-api uvicorn app.main:app --reload --reload-dir $(API_DIR) --reload-dir workers --port 8000
 
-worker-dev: ## Run Celery worker locally
-	cd $(WORKER_DIR) && celery -A workers.celery_app worker --loglevel=debug --concurrency=2
+worker-dev: ## Run a Celery worker locally
+	uv run --package revops-workers celery -A workers.celery_app worker --loglevel=debug --concurrency=2
 
-web-dev: ## Run Next.js dev server locally
+web-dev: ## Run the Next.js dev server locally
 	cd $(WEB_DIR) && npm run dev
 
-# ---- Testing & Quality ----
-test: ## Run all tests
-	cd $(API_DIR) && python -m pytest tests/ -v --tb=short
-	cd $(WEB_DIR) && npm run test
+# ---- Testing & quality ----
+install: ## Install everything (Python workspace + web)
+	uv sync --all-packages --all-extras
+	cd $(WEB_DIR) && npm ci
 
-test-api: ## Run API tests only
-	cd $(API_DIR) && python -m pytest tests/ -v --tb=short -x
+test: test-api test-web ## Run all tests
 
-lint: ## Run all linters
-	cd $(API_DIR) && ruff check . && mypy app/
-	cd $(WEB_DIR) && npm run lint
+test-api: ## API and worker tests (a throwaway PostgreSQL is started if TEST_DATABASE_URL is not set)
+	uv run --package revops-api pytest $(API_DIR)/tests -q
 
-format: ## Auto-format Python code
-	cd $(API_DIR) && ruff format . && ruff check --fix .
+test-web: ## Web tests
+	cd $(WEB_DIR) && npm test
 
-check: lint test ## Full quality gate (lint + test)
+lint: ## All linters and type checks
+	uv run ruff check .
+	uv run ruff format --check .
+	uv run mypy $(API_DIR)/app workers
+	cd $(WEB_DIR) && npm run lint && npm run type-check
 
-# ---- Housekeeping ----
+format: ## Format Python code
+	uv run ruff format . && uv run ruff check --fix .
+
+check: lint test ## Full quality gate
+
+mutation: mutation-api mutation-web ## Mutation check of the security-critical code, API and web (slow: one test run per mutant)
+
+mutation-api: ## Mutation check of the API's authentication, encryption, URL and signature code
+	python3 $(API_DIR)/tests/mutation/mutate.py $(API_DIR)/tests/mutation/mutants.py -- uv run --package revops-api pytest $(API_DIR)/tests -x -q -p no:cacheprovider
+
+mutation-web: ## Mutation check of the web app's session, proxy and helper code
+	cd $(WEB_DIR) && python3 test/mutation/mutate.py test/mutation/mutants.py -- npx vitest run --bail 1
+
 clean: ## Remove build artifacts and caches
-	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
-	find . -type d -name .pytest_cache -exec rm -rf {} + 2>/dev/null || true
-	find . -type d -name .mypy_cache -exec rm -rf {} + 2>/dev/null || true
-	find . -type d -name .ruff_cache -exec rm -rf {} + 2>/dev/null || true
-	rm -rf $(WEB_DIR)/.next
+	find . -type d \( -name __pycache__ -o -name .pytest_cache -o -name .mypy_cache -o -name .ruff_cache \) -prune -exec rm -rf {} + 2>/dev/null || true
+	rm -rf $(WEB_DIR)/.next $(WEB_DIR)/coverage
 	@echo "Clean done."
-
-install-api: ## Install API dependencies
-	cd $(API_DIR) && pip install -e ".[dev]"
-
-install-web: ## Install web dependencies
-	cd $(WEB_DIR) && npm install
-
-install: install-api install-web ## Install all dependencies
-
-# ---- Data directories ----
-data-dirs: ## Create local data directories
-	mkdir -p data/raw data/processed data/exports
-	touch data/.gitkeep

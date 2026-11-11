@@ -1,8 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+import { ApiError, fetchApi } from "@/lib/api";
 
 type CrmConnection = {
   id: string;
@@ -71,12 +70,9 @@ export default function IntegrationsPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`${API}/api/v1/integrations`, {
-      headers: { Authorization: `Bearer ${localStorage.getItem("token") ?? ""}` },
-    })
-      .then((r) => (r.ok ? r.json() : []))
+    fetchApi<CrmConnection[]>("/integrations")
       .then(setConnections)
-      .catch(() => setConnections([]))
+      .catch((e: unknown) => setError(e instanceof ApiError ? e.message : "Could not load integrations"))
       .finally(() => setLoading(false));
   }, []);
 
@@ -85,26 +81,17 @@ export default function IntegrationsPage() {
     setSyncResult(null);
     setError(null);
     try {
-      const r = await fetch(`${API}/api/v1/integrations/${connId}/sync-${direction}`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${localStorage.getItem("token") ?? ""}` },
-      });
-      if (!r.ok) {
-        const d = await r.json();
-        setError(d.detail ?? "Sync failed");
-      } else {
-        const result = await r.json();
-        setSyncResult({ id: connId, result });
-      }
+      const result = await fetchApi<SyncResult>(`/integrations/${encodeURIComponent(connId)}/sync-${direction}`, { method: "POST" });
+      setSyncResult({ id: connId, result });
     } catch (e) {
-      setError("Network error");
+      setError(e instanceof ApiError ? e.message : "Sync failed");
     } finally {
       setSyncingId(null);
     }
   }
 
   return (
-    <div className="p-8 max-w-4xl mx-auto">
+    <div className="p-4 sm:p-8 max-w-4xl mx-auto">
       <div className="mb-8">
         <h1 className="text-2xl font-bold" style={{ color: "var(--text)" }}>
           Integrations
@@ -148,7 +135,7 @@ export default function IntegrationsPage() {
           <p className="text-xs" style={{ color: "var(--text-faint)" }}>
             Connect HubSpot via API key, or start a Salesforce OAuth flow at{" "}
             <code
-              className="px-1 py-0.5 rounded"
+              className="px-1 py-0.5 rounded-sm"
               style={{ background: "var(--surface-overlay)" }}
             >
               /api/v1/integrations/salesforce/oauth/callback
@@ -199,7 +186,7 @@ export default function IntegrationsPage() {
                     disabled={syncingId === conn.id || !conn.is_active}
                     className="text-xs px-3 py-1.5 rounded-md font-medium disabled:opacity-40 transition-opacity"
                     style={{
-                      background: "var(--primary)",
+                      background: "var(--primary-strong)",
                       color: "#fff",
                     }}
                   >
@@ -245,7 +232,7 @@ export default function IntegrationsPage() {
 
               {conn.last_sync_error && (
                 <div
-                  className="mt-3 px-3 py-2 rounded text-xs"
+                  className="mt-3 px-3 py-2 rounded-sm text-xs"
                   style={{ background: "rgba(239,68,68,0.08)", color: "var(--red)" }}
                 >
                   Last error: {conn.last_sync_error}

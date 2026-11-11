@@ -1,5 +1,6 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -7,12 +8,14 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 
+if TYPE_CHECKING:
+    from app.models.company import Company
+    from app.models.scoring import LeadScore
+
 
 class Contact(Base):
     __tablename__ = "contacts"
-    __table_args__ = (
-        UniqueConstraint("source_system", "source_record_id", name="uq_contact_source"),
-    )
+    __table_args__ = (UniqueConstraint("source_system", "source_record_id", name="uq_contact_source"),)
 
     id: Mapped[str] = mapped_column(UUID(as_uuid=False), primary_key=True, default=lambda: str(uuid.uuid4()))
 
@@ -44,19 +47,19 @@ class Contact(Base):
     schema_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
         nullable=False,
     )
 
     # Relationships
-    company: Mapped["Company | None"] = relationship("Company", back_populates="contacts")  # noqa: F821
+    company: Mapped["Company | None"] = relationship("Company", back_populates="contacts")
     features: Mapped["ContactFeature | None"] = relationship("ContactFeature", back_populates="contact", uselist=False)
-    scores: Mapped[list["LeadScore"]] = relationship("LeadScore", back_populates="contact", lazy="select")  # noqa: F821
+    scores: Mapped[list["LeadScore"]] = relationship("LeadScore", back_populates="contact", lazy="select")
 
     @property
     def full_name(self) -> str:
@@ -109,7 +112,7 @@ class ContactFeature(Base):
 
     # Feature freshness
     computed_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
     window_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     window_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

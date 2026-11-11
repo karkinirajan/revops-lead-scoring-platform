@@ -1,8 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import clsx from "clsx";
+import { signOut } from "@/lib/api";
+
+export type SidebarUser = { email: string; role: string };
 
 const NAV = [
   { href: "/dashboard", label: "Dashboard", icon: DashIcon },
@@ -15,27 +18,41 @@ const NAV = [
   { href: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 
-export function Sidebar() {
+export function Logo() {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="w-7 h-7 rounded-md flex items-center justify-center text-xs font-bold text-white" style={{ background: "var(--primary-strong)" }}>
+        RS
+      </span>
+      <span className="font-semibold text-sm tracking-tight" style={{ color: "var(--text)" }}>
+        RevOps Scoring
+      </span>
+    </div>
+  );
+}
+
+export function Sidebar({ user, open = false, onNavigate }: { user: SidebarUser; open?: boolean; onNavigate?: () => void }) {
   const path = usePathname();
+  const router = useRouter();
+
+  async function handleSignOut() {
+    onNavigate?.();
+    await signOut();
+    router.replace("/login");
+    router.refresh();
+  }
+
   return (
     <aside
-      className="flex flex-col w-56 shrink-0 border-r"
+      id="app-navigation"
+      className={clsx(
+        "w-56 shrink-0 flex-col border-r md:static md:z-auto md:flex",
+        open ? "fixed inset-y-0 left-0 z-40 flex" : "hidden",
+      )}
       style={{ background: "var(--surface)", borderColor: "var(--border)" }}
     >
-      {/* Logo */}
-      <div
-        className="flex items-center gap-2 px-5 h-14 border-b"
-        style={{ borderColor: "var(--border)" }}
-      >
-        <span
-          className="w-7 h-7 rounded-md flex items-center justify-center text-xs font-bold text-white"
-          style={{ background: "var(--primary)" }}
-        >
-          RS
-        </span>
-        <span className="font-semibold text-sm tracking-tight" style={{ color: "var(--text)" }}>
-          RevOps Scoring
-        </span>
+      <div className="flex h-14 items-center border-b px-5" style={{ borderColor: "var(--border)" }}>
+        <Logo />
       </div>
 
       {/* Nav */}
@@ -46,6 +63,8 @@ export function Sidebar() {
             <Link
               key={href}
               href={href}
+              onClick={onNavigate}
+              aria-current={active ? "page" : undefined}
               className={clsx(
                 "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors",
                 active
@@ -65,8 +84,22 @@ export function Sidebar() {
       </nav>
 
       {/* Footer */}
-      <div className="px-5 py-4 border-t text-xs" style={{ borderColor: "var(--border)", color: "var(--text-faint)" }}>
-        v2.0.0
+      <div className="px-5 py-4 border-t text-xs space-y-2" style={{ borderColor: "var(--border)", color: "var(--text-faint)" }}>
+        <div>
+          <div className="truncate" style={{ color: "var(--text-muted)" }} title={user.email}>
+            {user.email}
+          </div>
+          <div className="capitalize">{user.role}</div>
+        </div>
+        <button
+          type="button"
+          onClick={handleSignOut}
+          className="underline hover:text-white focus-visible:ring-2 focus-visible:ring-primary rounded-sm"
+          style={{ color: "var(--text-muted)" }}
+        >
+          Sign out
+        </button>
+        <div>v2.0.0</div>
       </div>
     </aside>
   );

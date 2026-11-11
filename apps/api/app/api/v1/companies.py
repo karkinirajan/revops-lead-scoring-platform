@@ -9,6 +9,7 @@ from app.database import get_db
 from app.models.company import Company
 from app.schemas.common import PaginatedResponse
 from app.schemas.company import CompanyCreate, CompanyRead, CompanyUpdate
+from app.services.search_utils import LIKE_ESCAPE, contains_pattern
 
 router = APIRouter()
 
@@ -28,8 +29,11 @@ def list_companies(
     if industry:
         q = q.where(Company.industry == industry)
     if search:
-        term = f"%{search.lower()}%"
-        q = q.where(func.lower(Company.name).like(term) | func.lower(Company.domain).like(term))
+        term = contains_pattern(search.lower())
+        q = q.where(
+            func.lower(Company.name).like(term, escape=LIKE_ESCAPE)
+            | func.lower(Company.domain).like(term, escape=LIKE_ESCAPE)
+        )
 
     total = db.scalar(select(func.count()).select_from(q.subquery()))
     items = db.scalars(q.offset((page - 1) * page_size).limit(page_size)).all()
@@ -39,7 +43,7 @@ def list_companies(
         total=total or 0,
         page=page,
         page_size=page_size,
-        pages=max(1, -(-( total or 0) // page_size)),
+        pages=max(1, -(-(total or 0) // page_size)),
     )
 
 

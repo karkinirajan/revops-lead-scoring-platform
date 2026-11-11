@@ -5,7 +5,10 @@ Incrementally recomputes pre-aggregated feature rows for contacts.
 In production these would pull from a time-series events table;
 here we use a simplified approach that can be extended.
 """
+
 from __future__ import annotations
+
+from datetime import UTC
 
 import structlog
 
@@ -16,6 +19,7 @@ logger = structlog.get_logger(__name__)
 
 def _get_db():
     from app.database import SessionLocal
+
     return SessionLocal()
 
 
@@ -26,9 +30,10 @@ def compute_features_for_contact(contact_id: str) -> None:
     the Celery task and the CLI.
     """
     import uuid
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlalchemy import select
+
     from app.models.contact import Contact, ContactFeature
     from app.models.ingestion import RawEvent
 
@@ -60,7 +65,7 @@ def compute_features_for_contact(contact_id: str) -> None:
         pricing_page_visited = False
         demo_requested = False
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for ev in events:
             p = ev.raw_payload
             event_type = p.get("event_type", "")
@@ -93,7 +98,7 @@ def compute_features_for_contact(contact_id: str) -> None:
             days_since = (now - events[0].event_time).days
 
         # Upsert feature row
-        feat = contact.features
+        feat = db.scalar(select(ContactFeature).where(ContactFeature.contact_id == contact_id))
         if feat is None:
             feat = ContactFeature(id=str(uuid.uuid4()), contact_id=contact_id)
             db.add(feat)
@@ -139,7 +144,8 @@ def recompute_all_features(self, batch_size: int = 500):
     Hourly job: recompute features for all contacts in batches.
     Shards by contact_id hash into smaller parallel tasks.
     """
-    from sqlalchemy import select, func
+    from sqlalchemy import func, select
+
     from app.database import SessionLocal
     from app.models.contact import Contact
 

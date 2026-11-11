@@ -1,9 +1,11 @@
 """
 CRM sync worker tasks — HubSpot batch upserts with retry and DLQ routing.
 """
+
 from __future__ import annotations
 
 import uuid
+from datetime import UTC
 
 import structlog
 
@@ -14,6 +16,7 @@ logger = structlog.get_logger(__name__)
 
 def _get_db():
     from app.database import SessionLocal
+
     return SessionLocal()
 
 
@@ -29,7 +32,8 @@ def _get_db():
 )
 def sync_contact_to_hubspot(self, contact_id: str, score_id: str | None = None):
     """Sync a single contact's latest score to HubSpot."""
-    from sqlalchemy import select, func
+    from sqlalchemy import select
+
     from app.models.contact import Contact
     from app.models.scoring import LeadScore
     from app.services.crm_sync import sync_batch_to_hubspot
@@ -64,15 +68,16 @@ def sync_contact_to_hubspot(self, contact_id: str, score_id: str | None = None):
         success, failure = sync_batch_to_hubspot([payload], db_session=db, job_id=str(uuid.uuid4()))
 
         if success:
-            from datetime import datetime, timezone
-            score.synced_to_hubspot_at = datetime.now(timezone.utc)
+            from datetime import datetime
+
+            score.synced_to_hubspot_at = datetime.now(UTC)
             db.commit()
 
         return {"status": "ok" if success else "failed", "contact_id": contact_id}
     except Exception as exc:
         db.rollback()
         logger.error("hubspot_sync_task_failed", contact_id=contact_id, error=str(exc))
-        raise self.retry(exc=exc)
+        raise self.retry(exc=exc) from exc
     finally:
         db.close()
 
@@ -88,9 +93,9 @@ def sync_top_leads_to_hubspot(self, top_n: int = 1000, min_score: int = 50):
     Daily task: sync all WARM+ leads to HubSpot in batches.
     Uses batch upsert endpoint for efficiency.
     """
-    from sqlalchemy import select, func
+    from sqlalchemy import func, select
+
     from app.models.contact import Contact
-    from app.models.company import Company
     from app.models.scoring import LeadScore
     from app.services.crm_sync import sync_batch_to_hubspot
 
@@ -104,7 +109,9 @@ def sync_top_leads_to_hubspot(self, top_n: int = 1000, min_score: int = 50):
         )
         q = (
             select(LeadScore, Contact)
-            .join(latest, (LeadScore.contact_id == latest.c.contact_id) & (LeadScore.scored_at == latest.c.max_scored_at))
+            .join(
+                latest, (LeadScore.contact_id == latest.c.contact_id) & (LeadScore.scored_at == latest.c.max_scored_at)
+            )
             .join(Contact, LeadScore.contact_id == Contact.id)
             .order_by(LeadScore.lead_score.desc())
             .limit(top_n)

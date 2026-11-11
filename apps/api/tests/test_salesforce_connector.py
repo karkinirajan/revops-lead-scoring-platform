@@ -8,11 +8,10 @@ Covers:
   - CrmConnectionCreate schema validation
   - SalesforceSyncService skips contacts without SF ID
 """
+
 import os
 import sys
-import pytest
-from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 # Make workers package importable from API test context
 _WORKERS_ROOT = os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "workers")
@@ -23,7 +22,8 @@ if _REPO_ROOT not in sys.path:
 
 class TestSalesforceContactConnector:
     def _make_connector(self):
-        from workers.connectors.salesforce import SalesforceContactConnector, SalesforceClient
+        from workers.connectors.salesforce import SalesforceClient, SalesforceContactConnector
+
         client = MagicMock(spec=SalesforceClient)
         return SalesforceContactConnector(client)
 
@@ -83,7 +83,8 @@ class TestSalesforceContactConnector:
 
 class TestSalesforceSyncService:
     def test_push_skips_contacts_without_sf_id(self):
-        from workers.connectors.salesforce import SalesforceSyncService, SalesforceClient
+        from workers.connectors.salesforce import SalesforceClient, SalesforceSyncService
+
         client = MagicMock(spec=SalesforceClient)
         svc = SalesforceSyncService(client)
 
@@ -97,7 +98,8 @@ class TestSalesforceSyncService:
         client.update_contact_scores.assert_not_called()
 
     def test_push_calls_update_with_sf_ids(self):
-        from workers.connectors.salesforce import SalesforceSyncService, SalesforceClient
+        from workers.connectors.salesforce import SalesforceClient, SalesforceSyncService
+
         client = MagicMock(spec=SalesforceClient)
         client.update_contact_scores.return_value = {"success": 1, "failure": 0}
         svc = SalesforceSyncService(client)
@@ -114,6 +116,7 @@ class TestCrmConnectionSchema:
     def test_create_salesforce_requires_instance_url(self):
         # Validated at API layer, not Pydantic — just confirm model accepts it
         from app.api.v1.integrations import CrmConnectionCreate
+
         conn = CrmConnectionCreate(
             crm_type="salesforce",
             name="My Salesforce",
@@ -125,6 +128,7 @@ class TestCrmConnectionSchema:
 
     def test_create_hubspot_no_instance_url(self):
         from app.api.v1.integrations import CrmConnectionCreate
+
         conn = CrmConnectionCreate(
             crm_type="hubspot",
             name="My HubSpot",
@@ -134,5 +138,6 @@ class TestCrmConnectionSchema:
 
     def test_default_sync_direction(self):
         from app.api.v1.integrations import CrmConnectionCreate
+
         conn = CrmConnectionCreate(crm_type="hubspot", name="HubSpot", access_token="tok")
         assert conn.sync_direction == "bidirectional"

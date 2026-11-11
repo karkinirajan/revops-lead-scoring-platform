@@ -1,6 +1,7 @@
 """Model registry — tracks every trained ML model artifact."""
+
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 
 from sqlalchemy import DateTime, Float, Integer, String, Text
@@ -11,10 +12,10 @@ from app.database import Base
 
 
 class ModelStage(StrEnum):
-    TRAINING  = "training"
-    SHADOW    = "shadow"       # running alongside v1, scores not used in CRM
-    CHAMPION  = "champion"     # live model used for production scoring
-    ARCHIVED  = "archived"
+    TRAINING = "training"
+    SHADOW = "shadow"  # running alongside v1, scores not used in CRM
+    CHAMPION = "champion"  # live model used for production scoring
+    ARCHIVED = "archived"
 
 
 class ModelRegistry(Base):
@@ -35,7 +36,7 @@ class ModelRegistry(Base):
 
     # Training dataset info
     training_rows: Mapped[int | None] = mapped_column(Integer)
-    positive_rate: Mapped[float | None] = mapped_column(Float)   # % converted in training set
+    positive_rate: Mapped[float | None] = mapped_column(Float)  # % converted in training set
 
     # Evaluation metrics (held-out test set)
     precision_hot: Mapped[float | None] = mapped_column(Float)
@@ -51,8 +52,8 @@ class ModelRegistry(Base):
     artifact_size_bytes: Mapped[int | None] = mapped_column(Integer)
 
     # Training provenance
-    trained_by: Mapped[str | None] = mapped_column(String(100))   # user_id or "scheduler"
-    training_config: Mapped[dict | None] = mapped_column(JSONB)   # hyperparameters used
+    trained_by: Mapped[str | None] = mapped_column(String(100))  # user_id or "scheduler"
+    training_config: Mapped[dict | None] = mapped_column(JSONB)  # hyperparameters used
     notes: Mapped[str | None] = mapped_column(Text)
 
     trained_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -60,5 +61,5 @@ class ModelRegistry(Base):
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )

@@ -8,10 +8,11 @@ Responsibilities:
   - Quarantine invalid records
   - Trigger feature recompute on new/updated contacts
 """
+
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
 
@@ -26,13 +27,16 @@ _IDEM_TTL = 86400  # 24h
 
 def _get_redis():
     import redis as redis_lib
+
     from app.config import get_settings
+
     s = get_settings()
     return redis_lib.from_url(s.redis_url, decode_responses=True)
 
 
 def _get_db():
     from app.database import SessionLocal
+
     return SessionLocal()
 
 
@@ -61,7 +65,6 @@ def process_raw_event(self, raw_event_id: str):
 
     db = _get_db()
     try:
-        from sqlalchemy import select
         from app.models.ingestion import RawEvent
 
         event = db.get(RawEvent, raw_event_id)
@@ -83,14 +86,17 @@ def process_raw_event(self, raw_event_id: str):
 
         # Route to correct normalizer
         contact_id = None
-        if event.source_system in ("hubspot", "salesforce", "csv", "seed"):
+        if event.operation == "delete":
+            # Contacts are kept: a source deleting its record is not a reason to lose the score history. (It used to re-create the contact.)
+            logger.info("ingest_delete_ignored", raw_event_id=raw_event_id, source_system=event.source_system)
+        elif event.source_system in ("hubspot", "salesforce", "csv", "seed"):
             contact_id = _upsert_contact(db, event)
         else:
             logger.info("unknown_source_system", source_system=event.source_system)
 
         # Mark processed
         event.processed = True
-        event.processed_at = datetime.now(timezone.utc)
+        event.processed_at = datetime.now(UTC)
         db.commit()
 
         # Set idempotency key
@@ -105,7 +111,7 @@ def process_raw_event(self, raw_event_id: str):
     except Exception as exc:
         db.rollback()
         logger.error("ingest_task_failed", raw_event_id=raw_event_id, error=str(exc), exc_info=True)
-        raise self.retry(exc=exc)
+        raise self.retry(exc=exc) from exc
     finally:
         db.close()
 
@@ -126,14 +132,15 @@ def _validate_event(event) -> list[str]:
 def _upsert_contact(db, event) -> str | None:
     """Normalize raw payload and upsert into contacts table. Returns contact_id."""
     from sqlalchemy import select
-    from app.models.contact import Contact
+
     from app.models.company import Company
+    from app.models.contact import Contact
 
     payload = event.raw_payload
 
     # Normalize email
     email = (payload.get("email") or payload.get("properties", {}).get("email", "")).lower().strip()
-    if not email:
+    if not email or "@" not in email or len(email) > 255:
         return None
 
     # Find or create company
@@ -205,4 +212,5 @@ def _upsert_contact(db, event) -> str | None:
 def recompute_contact_features(self, contact_id: str):
     """Lightweight feature refresh triggered after a contact is upserted."""
     from workers.tasks.features import compute_features_for_contact
+
     compute_features_for_contact(contact_id=contact_id)

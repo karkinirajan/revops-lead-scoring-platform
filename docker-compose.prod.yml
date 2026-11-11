@@ -1,64 +1,77 @@
+# Production stack. Build the images from the repository root first (see the README), then, with the variables below in .env:
+#   IMAGE_TAG=<tag> docker compose -f docker-compose.prod.yml up -d
+# Required in .env: POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB, REDIS_PASSWORD, and the application secrets listed in .env.example. The application
+# refuses to start with APP_ENV=production and placeholder secrets.
+# The API is reachable only through nginx, which is why it trusts X-Forwarded-For (see the API image's CMD).
+
+x-python-env: &python-env
+  DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+  CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+  CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/0
+  APP_ENV: production
+
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     restart: always
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
     networks:
       - internal
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 30s
       timeout: 10s
       retries: 5
 
   redis:
-    image: redis:7-alpine
+    image: redis:8-alpine
     restart: always
-    command: >
-      redis-server
-      --appendonly yes
-      --appendfsync everysec
-      --requirepass ${REDIS_PASSWORD}
-      --maxmemory 1gb
-      --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --appendfsync everysec --requirepass ${REDIS_PASSWORD} --maxmemory 1gb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
     networks:
       - internal
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
       interval: 30s
       timeout: 10s
       retries: 5
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+  migrate:
+    image: revops-api:${IMAGE_TAG:-latest}
+    restart: "no"
+    env_file: .env
+    environment:
+      <<: *python-env
+    networks:
+      - internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: alembic -c apps/api/alembic.ini upgrade head
 
   api:
     image: revops-api:${IMAGE_TAG:-latest}
     restart: always
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/0
-      APP_ENV: production
+      <<: *python-env
     networks:
       - internal
-      - public
+      - egress
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
-    command: >
-      sh -c "alembic upgrade head && gunicorn app.main:app
-             --worker-class uvicorn.workers.UvicornWorker
-             --workers 4 --bind 0.0.0.0:8000
-             --timeout 120 --keepalive 5"
     deploy:
       replicas: 2
       update_config:
@@ -74,19 +87,15 @@ services:
     restart: always
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/0
-      APP_ENV: production
+      <<: *python-env
     networks:
       - internal
+      - egress
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
-    command: celery -A workers.celery_app worker --loglevel=warning --concurrency=8 -Q ingest,features,scoring,sync,dlq
     deploy:
       replicas: 2
       update_config:
@@ -98,17 +107,15 @@ services:
     restart: always
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
-      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD}@redis:6379/0
+      <<: *python-env
     networks:
       - internal
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
     command: celery -A workers.celery_app beat --loglevel=warning --scheduler celery.beat:PersistentScheduler
     deploy:
-      replicas: 1  # Only one beat instance allowed
+      replicas: 1 # only one beat instance may run
 
   web:
     image: revops-web:${IMAGE_TAG:-latest}
@@ -119,10 +126,10 @@ services:
       API_INTERNAL_URL: http://api:8000
     networks:
       - internal
-      - public
+      - frontend
 
   nginx:
-    image: nginx:alpine
+    image: nginx:1.30-alpine
     restart: always
     ports:
       - "80:80"
@@ -131,7 +138,8 @@ services:
       - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./infra/nginx/certs:/etc/nginx/certs:ro
     networks:
-      - public
+      - internal
+      - frontend
     depends_on:
       - api
       - web
@@ -141,6 +149,9 @@ volumes:
   redis_data:
 
 networks:
+  # no outside access: the database, Redis and the services that need only them
   internal:
     internal: true
-  public:
+  # outbound access for the services that call CRMs, Jina and the AI provider
+  egress:
+  frontend:

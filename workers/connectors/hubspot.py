@@ -8,11 +8,12 @@ Supports:
   - Rate-limit aware (10 req/s default)
   - Quarantine for missing required fields
 """
+
 from __future__ import annotations
 
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 import httpx
 import structlog
@@ -23,16 +24,32 @@ logger = structlog.get_logger(__name__)
 
 # HubSpot contact properties to request
 _CONTACT_PROPS = [
-    "email", "firstname", "lastname", "jobtitle", "phone",
-    "company", "domain", "lifecyclestage", "hs_lead_status",
-    "hubspot_owner_id", "lastmodifieddate", "createdate",
+    "email",
+    "firstname",
+    "lastname",
+    "jobtitle",
+    "phone",
+    "company",
+    "domain",
+    "lifecyclestage",
+    "hs_lead_status",
+    "hubspot_owner_id",
+    "lastmodifieddate",
+    "createdate",
 ]
 
 # HubSpot company properties to request
 _COMPANY_PROPS = [
-    "name", "domain", "industry", "numberofemployees",
-    "annualrevenue", "country", "city", "lifecyclestage",
-    "hubspot_owner_id", "hs_lastmodifieddate",
+    "name",
+    "domain",
+    "industry",
+    "numberofemployees",
+    "annualrevenue",
+    "country",
+    "city",
+    "lifecyclestage",
+    "hubspot_owner_id",
+    "hs_lastmodifieddate",
 ]
 
 

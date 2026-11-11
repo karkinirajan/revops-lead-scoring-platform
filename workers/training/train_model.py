@@ -13,18 +13,16 @@ Training data:
     trains on the same features used in production.
 
 Output:
-    - Serialized model: data/models/v<version>.pkl
+    - Serialized model: data/models/v<version>.json (XGBoost JSON; the API only loads files of this kind from ML_MODELS_DIR)
     - Row in model_registry table with metrics and feature importances
 """
+
 from __future__ import annotations
 
+import argparse
 import os
 import sys
-import uuid
-import pickle
-import argparse
-import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # Make API app importable
@@ -32,9 +30,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "apps", "
 
 import structlog
 
+from app.config import get_settings
+
 logger = structlog.get_logger(__name__)
 
-MODELS_DIR = Path("data/models")
+MODELS_DIR = Path(get_settings().ml_models_dir)  # the same folder the API loads models from
 FEATURE_COLUMNS = [
     "api_calls_7d",
     "api_calls_30d",
@@ -62,13 +62,12 @@ def _build_dataset(db) -> tuple[list[list[float]], list[int]]:
     Features: pulled from ContactFeature rows.
     """
     from sqlalchemy import select
+
+    from app.models.company import Company
     from app.models.contact import Contact, ContactFeature
     from app.models.conversion import Conversion
-    from app.models.company import Company
 
-    converted_ids = set(
-        db.scalars(select(Conversion.contact_id).distinct()).all()
-    )
+    converted_ids = set(db.scalars(select(Conversion.contact_id).distinct()).all())
 
     features_rows = db.execute(
         select(ContactFeature, Contact, Company)
@@ -109,20 +108,17 @@ def train(min_rows: int = 200, shadow: bool = True, promote: bool = False) -> st
     Returns the new model version string.
     """
     try:
-        import xgboost as xgb
-        from sklearn.model_selection import train_test_split
-        from sklearn.metrics import (
-            precision_score, recall_score, roc_auc_score, f1_score as f1
-        )
         import numpy as np
+        import xgboost as xgb
+        from sklearn.metrics import f1_score as f1
+        from sklearn.metrics import precision_score, recall_score, roc_auc_score
+        from sklearn.model_selection import train_test_split
     except ImportError as e:
         logger.error("ml_dependencies_missing", error=str(e))
-        raise SystemExit(
-            "XGBoost/scikit-learn not installed. "
-            "Run: pip install xgboost scikit-learn"
-        ) from e
+        raise SystemExit("XGBoost/scikit-learn not installed. Run: pip install xgboost scikit-learn") from e
 
     from app.database import SessionLocal
+
     db = SessionLocal()
 
     logger.info("training_dataset_build_start")
@@ -136,8 +132,7 @@ def train(min_rows: int = 200, shadow: bool = True, promote: bool = False) -> st
         )
         db.close()
         raise ValueError(
-            f"Only {len(X_list)} rows available; need at least {min_rows}. "
-            "Seed more data or lower --min-rows."
+            f"Only {len(X_list)} rows available; need at least {min_rows}. Seed more data or lower --min-rows."
         )
 
     X = np.array(X_list)
@@ -166,7 +161,7 @@ def train(min_rows: int = 200, shadow: bool = True, promote: bool = False) -> st
     }
 
     dtrain = xgb.DMatrix(X_train, label=y_train, feature_names=FEATURE_COLUMNS)
-    dtest  = xgb.DMatrix(X_test,  label=y_test,  feature_names=FEATURE_COLUMNS)
+    dtest = xgb.DMatrix(X_test, label=y_test, feature_names=FEATURE_COLUMNS)
 
     booster = xgb.train(
         {k: v for k, v in params.items() if k not in ("n_estimators",)},
@@ -182,9 +177,9 @@ def train(min_rows: int = 200, shadow: bool = True, promote: bool = False) -> st
 
     metrics = {
         "precision_hot": round(float(precision_score(y_test, y_pred, zero_division=0)), 4),
-        "recall_hot":    round(float(recall_score(y_test, y_pred, zero_division=0)), 4),
-        "roc_auc":       round(float(roc_auc_score(y_test, y_prob)) if y_test.sum() > 0 else 0.0, 4),
-        "f1_score":      round(float(f1(y_test, y_pred, zero_division=0)), 4),
+        "recall_hot": round(float(recall_score(y_test, y_pred, zero_division=0)), 4),
+        "roc_auc": round(float(roc_auc_score(y_test, y_prob)) if y_test.sum() > 0 else 0.0, 4),
+        "f1_score": round(float(f1(y_test, y_pred, zero_division=0)), 4),
     }
     logger.info("training_metrics", **metrics)
 
@@ -193,26 +188,25 @@ def train(min_rows: int = 200, shadow: bool = True, promote: bool = False) -> st
 
     # Persist artifact
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    version = f"2.{datetime.now(timezone.utc).strftime('%Y%m%d.%H%M')}"
-    artifact_path = str(MODELS_DIR / f"v{version}.pkl")
-    with open(artifact_path, "wb") as f:
-        pickle.dump(booster, f)
+    version = f"2.{datetime.now(UTC).strftime('%Y%m%d.%H%M')}"
+    artifact_path = str(MODELS_DIR / f"v{version}.json")
+    booster.save_model(artifact_path)  # XGBoost's own JSON format: loading it cannot run code (a pickle can)
     artifact_size = os.path.getsize(artifact_path)
     logger.info("model_artifact_saved", path=artifact_path, size_bytes=artifact_size)
 
     # Register in DB
     from app.models.model_registry import ModelRegistry, ModelStage
+
     stage = ModelStage.CHAMPION if promote else ModelStage.SHADOW if shadow else ModelStage.TRAINING
 
     # If promoting, archive existing champion
     if promote:
         from sqlalchemy import select
-        existing_champion = db.scalar(
-            select(ModelRegistry).where(ModelRegistry.stage == ModelStage.CHAMPION)
-        )
+
+        existing_champion = db.scalar(select(ModelRegistry).where(ModelRegistry.stage == ModelStage.CHAMPION))
         if existing_champion:
             existing_champion.stage = ModelStage.ARCHIVED
-            existing_champion.archived_at = datetime.now(timezone.utc)
+            existing_champion.archived_at = datetime.now(UTC)
 
     entry = ModelRegistry(
         version=version,
@@ -229,8 +223,8 @@ def train(min_rows: int = 200, shadow: bool = True, promote: bool = False) -> st
         artifact_size_bytes=artifact_size,
         training_config=params,
         trained_by="cli",
-        trained_at=datetime.now(timezone.utc),
-        promoted_at=datetime.now(timezone.utc) if promote else None,
+        trained_at=datetime.now(UTC),
+        promoted_at=datetime.now(UTC) if promote else None,
     )
     db.add(entry)
     db.commit()

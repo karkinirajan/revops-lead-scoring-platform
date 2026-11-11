@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useCallback } from "react";
-import { getCompanies } from "@/lib/api";
+import { useState, useCallback, useRef } from "react";
+import { ApiError, getCompanies } from "@/lib/api";
+import { sizeTierLabel } from "@/lib/format";
 import type { Company, PaginatedResponse } from "@/lib/types";
 
 const SIZE_TIERS = ["smb", "mid_market", "enterprise"];
@@ -12,17 +13,22 @@ export function CompaniesTable({ initialData }: { initialData: PaginatedResponse
   const [sizeTier, setSizeTier] = useState("");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const latest = useRef(0); // only the newest request may update the table: typing fires one per keystroke and answers can arrive out of order
 
   const load = useCallback(async (p: number, st: string, s: string) => {
+    const mine = ++latest.current;
     setLoading(true);
+    setError(null);
     try {
       const result = await getCompanies({ page: p, page_size: 50, size_tier: st || undefined, search: s || undefined });
+      if (mine !== latest.current) return;
       setData(result);
       setPage(p);
-    } catch {
-      // keep
+    } catch (e) {
+      if (mine === latest.current) setError(e instanceof ApiError ? e.message : "Could not load companies"); // the rows already shown are kept
     } finally {
-      setLoading(false);
+      if (mine === latest.current) setLoading(false);
     }
   }, []);
 
@@ -35,7 +41,7 @@ export function CompaniesTable({ initialData }: { initialData: PaginatedResponse
           placeholder="Search companies…"
           value={search}
           onChange={(e) => { setSearch(e.target.value); load(1, sizeTier, e.target.value); }}
-          className="px-3 py-1.5 rounded text-sm border w-56"
+          className="px-3 py-1.5 rounded-sm text-sm border w-56"
           style={{ background: "var(--surface-raised)", borderColor: "var(--border)", color: "var(--text)" }}
         />
         <div className="flex gap-1.5">
@@ -43,14 +49,14 @@ export function CompaniesTable({ initialData }: { initialData: PaginatedResponse
             <button
               key={t}
               onClick={() => { const next = sizeTier === t ? "" : t; setSizeTier(next); load(1, next, search); }}
-              className="px-3 py-1 rounded-full text-xs font-medium border transition-colors capitalize"
+              className="px-3 py-1 rounded-full text-xs font-medium border transition-colors"
               style={{
                 background: sizeTier === t ? "var(--surface-overlay)" : "transparent",
                 borderColor: sizeTier === t ? "var(--border)" : "var(--border-muted)",
                 color: sizeTier === t ? "var(--text)" : "var(--text-muted)",
               }}
             >
-              {t.replace("_", " ")}
+              {sizeTierLabel(t)}
             </button>
           ))}
         </div>
@@ -59,7 +65,13 @@ export function CompaniesTable({ initialData }: { initialData: PaginatedResponse
         </span>
       </div>
 
-      <div className="rounded-xl border overflow-hidden" style={{ background: "var(--surface-raised)", borderColor: "var(--border)" }}>
+      {error && (
+        <div role="alert" className="mb-4 rounded-sm px-3 py-2 text-xs" style={{ background: "rgba(239,68,68,0.1)", color: "var(--red)" }}>
+          {error}
+        </div>
+      )}
+
+      <div className="rounded-xl border overflow-x-auto" style={{ background: "var(--surface-raised)", borderColor: "var(--border)" }}>
         <table className="w-full text-sm">
           <thead>
             <tr style={{ borderBottom: "1px solid var(--border)" }}>
@@ -88,8 +100,8 @@ export function CompaniesTable({ initialData }: { initialData: PaginatedResponse
                   </td>
                   <td className="px-5 py-3">
                     {co.size_tier ? (
-                      <span className="text-xs px-2 py-0.5 rounded capitalize" style={{ background: "var(--surface-overlay)", color: "var(--text-muted)" }}>
-                        {co.size_tier.replace("_", " ")}
+                      <span className="text-xs px-2 py-0.5 rounded-sm" style={{ background: "var(--surface-overlay)", color: "var(--text-muted)" }}>
+                        {sizeTierLabel(co.size_tier)}
                       </span>
                     ) : "—"}
                   </td>
@@ -103,8 +115,8 @@ export function CompaniesTable({ initialData }: { initialData: PaginatedResponse
           <div className="flex items-center justify-between px-5 py-3 border-t text-xs" style={{ borderColor: "var(--border)", color: "var(--text-muted)" }}>
             <span>Page {page} of {data.pages}</span>
             <div className="flex gap-2">
-              <button disabled={page <= 1 || loading} onClick={() => load(page - 1, sizeTier, search)} className="px-3 py-1.5 rounded border disabled:opacity-40" style={{ borderColor: "var(--border)" }}>← Prev</button>
-              <button disabled={page >= data.pages || loading} onClick={() => load(page + 1, sizeTier, search)} className="px-3 py-1.5 rounded border disabled:opacity-40" style={{ borderColor: "var(--border)" }}>Next →</button>
+              <button disabled={page <= 1 || loading} onClick={() => load(page - 1, sizeTier, search)} className="px-3 py-1.5 rounded-sm border disabled:opacity-40" style={{ borderColor: "var(--border)" }}>← Prev</button>
+              <button disabled={page >= data.pages || loading} onClick={() => load(page + 1, sizeTier, search)} className="px-3 py-1.5 rounded-sm border disabled:opacity-40" style={{ borderColor: "var(--border)" }}>Next →</button>
             </div>
           </div>
         )}

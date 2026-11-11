@@ -1,6 +1,7 @@
+import { ApiError, errorMessage } from "@/lib/errors";
+import { goToLogin } from "@/lib/navigation";
 import type {
   Company,
-  DashboardStats,
   PaginatedResponse,
   RankedLead,
   ScoreSimulateRequest,
@@ -8,43 +9,37 @@ import type {
   ScoringRun,
 } from "./types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+export { ApiError };
 
-class ApiError extends Error {
-  constructor(
-    public status: number,
-    message: string,
-  ) {
-    super(message);
-    this.name = "ApiError";
+/**
+ * Calls the API from the browser, through this app's own /bff proxy: same origin, with the session in httpOnly cookies. The page's JavaScript never sees a
+ * token. A 401 means the session is over, so the user is sent to sign in again.
+ */
+export async function fetchApi<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers);
+  if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+
+  let res: Response;
+  try {
+    res = await fetch(`/bff${path}`, { ...init, headers, credentials: "same-origin", cache: "no-store" });
+  } catch {
+    throw new ApiError(0, "Could not reach the server. Check your connection.");
   }
-}
 
-async function fetchApi<T>(path: string, init?: RequestInit): Promise<T> {
-  const token = typeof window !== "undefined" ? localStorage.getItem("access_token") : null;
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...(init?.headers as Record<string, string>),
-  };
-  if (token) headers["Authorization"] = `Bearer ${token}`;
-
-  const res = await fetch(`${API_BASE}/api/v1${path}`, { ...init, headers });
+  if (res.status === 401 && typeof window !== "undefined") {
+    goToLogin();
+    throw new ApiError(401, "Your session has expired. Sign in again.");
+  }
   if (!res.ok) {
-    const body = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new ApiError(res.status, body.detail ?? res.statusText);
+    const body: unknown = await res.json().catch(() => null);
+    throw new ApiError(res.status, errorMessage(body, res.statusText || "Request failed"));
   }
-  return res.json() as Promise<T>;
+  if (res.status === 204) return undefined as T;
+  return (await res.json()) as T;
 }
 
-// ---- Auth ----
-export async function login(email: string, password: string) {
-  const res = await fetch(`${API_BASE}/api/v1/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
-  if (!res.ok) throw new ApiError(res.status, "Invalid credentials");
-  return res.json();
+export async function signOut(): Promise<void> {
+  await fetch("/session/logout", { method: "POST", credentials: "same-origin" });
 }
 
 // ---- Leads ----
@@ -84,30 +79,15 @@ export async function getScoringRuns(limit = 20): Promise<ScoringRun[]> {
   return fetchApi(`/scoring/runs?limit=${limit}`);
 }
 
-export async function triggerScoringRun(opts?: {
-  filter_segment?: string;
-  is_shadow?: boolean;
-}): Promise<ScoringRun> {
-  return fetchApi("/scoring/runs", {
-    method: "POST",
-    body: JSON.stringify(opts ?? {}),
-  });
+export async function triggerScoringRun(opts?: { filter_segment?: string; is_shadow?: boolean }): Promise<ScoringRun> {
+  return fetchApi("/scoring/runs", { method: "POST", body: JSON.stringify(opts ?? {}) });
 }
 
 export async function getRun(id: string): Promise<ScoringRun> {
-  return fetchApi(`/scoring/runs/${id}`);
+  return fetchApi(`/scoring/runs/${encodeURIComponent(id)}`);
 }
 
 // ---- Score simulation ----
 export async function simulateScore(req: ScoreSimulateRequest): Promise<ScoreSimulateResponse> {
-  return fetchApi("/scoring/simulate", {
-    method: "POST",
-    body: JSON.stringify(req),
-  });
-}
-
-// ---- Health ----
-export async function getHealth() {
-  const res = await fetch(`${API_BASE}/health`);
-  return res.json();
+  return fetchApi("/scoring/simulate", { method: "POST", body: JSON.stringify(req) });
 }

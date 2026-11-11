@@ -1,24 +1,31 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { TierBadge } from "@/components/ui/TierBadge";
 import { ScoreBar } from "@/components/ui/ScoreBar";
-import { getLeads } from "@/lib/api";
-import type { PaginatedResponse, PriorityTier, RankedLead } from "@/lib/types";
+import { LeadIntelligencePanel } from "@/components/leads/LeadIntelligencePanel";
+import { ApiError, getLeads } from "@/lib/api";
+import { toCsv } from "@/lib/csv";
+import { sizeTierLabel } from "@/lib/format";
+import { NO_FILTERS, type LeadFilters, TIERS } from "@/lib/leads";
+import type { PaginatedResponse, RankedLead } from "@/lib/types";
 import { formatDistanceToNow } from "date-fns";
 
-const TIERS: PriorityTier[] = ["HOT", "WARM", "COOL", "COLD"];
-
-export function LeadsTable({ initialData }: { initialData: PaginatedResponse<RankedLead> }) {
+/** `initialFilters` is what the data was fetched with (from the page's URL), so the controls show what the list is filtered by. */
+export function LeadsTable({ initialData, initialFilters = NO_FILTERS }: { initialData: PaginatedResponse<RankedLead>; initialFilters?: LeadFilters }) {
   const [data, setData] = useState(initialData);
-  const [page, setPage] = useState(1);
-  const [tier, setTier] = useState<string>("");
-  const [minScore, setMinScore] = useState<string>("");
+  const [page, setPage] = useState(initialFilters.page);
+  const [tier, setTier] = useState<string>(initialFilters.tier);
+  const [minScore, setMinScore] = useState<string>(initialFilters.minScore);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const latest = useRef(0); // only the newest request may update the table
 
   const load = useCallback(
     async (p: number, t: string, ms: string) => {
+      const mine = ++latest.current;
       setLoading(true);
+      setError(null);
       try {
         const result = await getLeads({
           page: p,
@@ -26,12 +33,13 @@ export function LeadsTable({ initialData }: { initialData: PaginatedResponse<Ran
           priority_tier: t || undefined,
           min_score: ms ? Number(ms) : undefined,
         });
+        if (mine !== latest.current) return;
         setData(result);
         setPage(p);
-      } catch {
-        // keep existing data
+      } catch (e) {
+        if (mine === latest.current) setError(e instanceof ApiError ? e.message : "Could not load leads"); // the rows already shown are kept
       } finally {
-        setLoading(false);
+        if (mine === latest.current) setLoading(false);
       }
     },
     [],
@@ -61,7 +69,7 @@ export function LeadsTable({ initialData }: { initialData: PaginatedResponse<Ran
         l.scored_at,
       ]),
     ];
-    const csv = rows.map((r) => r.join(",")).join("\n");
+    const csv = toCsv(rows);
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -81,6 +89,7 @@ export function LeadsTable({ initialData }: { initialData: PaginatedResponse<Ran
             <button
               key={t}
               onClick={() => handleTier(t)}
+              aria-pressed={tier === t}
               className="px-3 py-1 rounded-full text-xs font-semibold border transition-colors"
               style={{
                 background: tier === t ? "var(--surface-overlay)" : "transparent",
@@ -104,7 +113,7 @@ export function LeadsTable({ initialData }: { initialData: PaginatedResponse<Ran
             max={100}
             value={minScore}
             onChange={(e) => handleMinScore(e.target.value)}
-            className="w-16 px-2 py-1 rounded text-xs border"
+            className="w-16 px-2 py-1 rounded-sm text-xs border"
             style={{
               background: "var(--surface-raised)",
               borderColor: "var(--border)",
@@ -120,7 +129,7 @@ export function LeadsTable({ initialData }: { initialData: PaginatedResponse<Ran
           </span>
           <button
             onClick={exportCsv}
-            className="text-xs px-3 py-1.5 rounded border transition-colors"
+            className="text-xs px-3 py-1.5 rounded-sm border transition-colors"
             style={{
               borderColor: "var(--border)",
               color: "var(--text-muted)",
@@ -131,6 +140,12 @@ export function LeadsTable({ initialData }: { initialData: PaginatedResponse<Ran
           </button>
         </div>
       </div>
+
+      {error && (
+        <div role="alert" className="mb-4 rounded-sm px-3 py-2 text-xs" style={{ background: "rgba(239,68,68,0.1)", color: "var(--red)" }}>
+          {error}
+        </div>
+      )}
 
       {/* Table */}
       <div
@@ -182,15 +197,18 @@ export function LeadsTable({ initialData }: { initialData: PaginatedResponse<Ran
                           {lead.job_title}
                         </div>
                       )}
+                      <div className="mt-2">
+                        <LeadIntelligencePanel contactId={lead.contact_id} contactName={lead.full_name} />
+                      </div>
                     </td>
                     <td className="px-5 py-3 text-xs" style={{ color: "var(--text-muted)" }}>
                       <div>{lead.company_name ?? "—"}</div>
                       {lead.company_size_tier && (
                         <div
-                          className="text-[10px] capitalize mt-0.5"
+                          className="text-[10px] mt-0.5"
                           style={{ color: "var(--text-faint)" }}
                         >
-                          {lead.company_size_tier.replace(/_/g, " ")}
+                          {sizeTierLabel(lead.company_size_tier)}
                         </div>
                       )}
                     </td>
@@ -202,7 +220,7 @@ export function LeadsTable({ initialData }: { initialData: PaginatedResponse<Ran
                     </td>
                     <td className="px-5 py-3">
                       <span
-                        className="text-xs px-2 py-0.5 rounded"
+                        className="text-xs px-2 py-0.5 rounded-sm whitespace-nowrap"
                         style={{ background: "var(--surface-overlay)", color: "var(--text-muted)" }}
                       >
                         {lead.recommended_action?.replace(/_/g, " ") ?? "—"}
@@ -237,7 +255,7 @@ export function LeadsTable({ initialData }: { initialData: PaginatedResponse<Ran
               <button
                 disabled={page <= 1 || loading}
                 onClick={() => load(page - 1, tier, minScore)}
-                className="px-3 py-1.5 rounded border disabled:opacity-40 transition-colors"
+                className="px-3 py-1.5 rounded-sm border disabled:opacity-40 transition-colors"
                 style={{ borderColor: "var(--border)", background: "transparent" }}
               >
                 ← Prev
@@ -245,7 +263,7 @@ export function LeadsTable({ initialData }: { initialData: PaginatedResponse<Ran
               <button
                 disabled={page >= data.pages || loading}
                 onClick={() => load(page + 1, tier, minScore)}
-                className="px-3 py-1.5 rounded border disabled:opacity-40 transition-colors"
+                className="px-3 py-1.5 rounded-sm border disabled:opacity-40 transition-colors"
                 style={{ borderColor: "var(--border)", background: "transparent" }}
               >
                 Next →

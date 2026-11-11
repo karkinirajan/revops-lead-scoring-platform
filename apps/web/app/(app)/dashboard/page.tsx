@@ -1,38 +1,18 @@
 import { StatCard } from "@/components/ui/StatCard";
-import { TierBadge } from "@/components/ui/TierBadge";
 import { ScoreBar } from "@/components/ui/ScoreBar";
 import { TriggerRunButton } from "@/components/dashboard/TriggerRunButton";
-import type { PriorityTier, RankedLead, ScoringRun } from "@/lib/types";
+import { apiFetch } from "@/lib/server/api";
+import type { PaginatedResponse, RankedLead, ScoringRun } from "@/lib/types";
 import { formatDistanceToNow } from "date-fns";
-
-const API = process.env.API_INTERNAL_URL ?? "http://localhost:8000";
+import Link from "next/link";
 
 async function getDashboardData() {
-  try {
-    const [leadsRes, runsRes] = await Promise.all([
-      fetch(`${API}/api/v1/scoring/leads?page_size=5&priority_tier=HOT`, {
-        next: { revalidate: 60 },
-      }),
-      fetch(`${API}/api/v1/scoring/runs?limit=5`, {
-        next: { revalidate: 60 },
-      }),
-    ]);
-
-    const [leads, runs] = await Promise.all([
-      leadsRes.ok ? leadsRes.json() : { items: [], total: 0 },
-      runsRes.ok ? runsRes.json() : [],
-    ]);
-
-    const allLeadsRes = await fetch(
-      `${API}/api/v1/scoring/leads?page_size=1`,
-      { next: { revalidate: 60 } },
-    );
-    const allLeads = allLeadsRes.ok ? await allLeadsRes.json() : { total: 0 };
-
-    return { leads, runs, total: allLeads.total };
-  } catch {
-    return { leads: { items: [], total: 0 }, runs: [], total: 0 };
-  }
+  const [leads, runs, all] = await Promise.all([
+    apiFetch<PaginatedResponse<RankedLead>>("/scoring/leads?page_size=5&priority_tier=HOT"),
+    apiFetch<ScoringRun[]>("/scoring/runs?limit=5"),
+    apiFetch<PaginatedResponse<RankedLead>>("/scoring/leads?page_size=1"),
+  ]);
+  return { leads, runs, total: all.total };
 }
 
 export default async function DashboardPage() {
@@ -43,9 +23,9 @@ export default async function DashboardPage() {
   const topLeads: RankedLead[] = leads.items ?? [];
 
   return (
-    <div className="p-8 max-w-7xl mx-auto">
+    <div className="p-4 sm:p-8 max-w-7xl mx-auto">
       {/* Header */}
-      <div className="flex items-center justify-between mb-8">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-8">
         <div>
           <h1 className="text-2xl font-bold" style={{ color: "var(--text)" }}>
             Dashboard
@@ -87,10 +67,10 @@ export default async function DashboardPage() {
       </div>
 
       {/* Two-column lower section */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         {/* Top HOT leads */}
         <section
-          className="rounded-xl border overflow-hidden"
+          className="rounded-xl border overflow-x-auto"
           style={{ background: "var(--surface-raised)", borderColor: "var(--border)" }}
         >
           <div
@@ -100,13 +80,9 @@ export default async function DashboardPage() {
             <h2 className="text-sm font-semibold" style={{ color: "var(--text)" }}>
               Top HOT Leads
             </h2>
-            <a
-              href="/leads?tier=HOT"
-              className="text-xs"
-              style={{ color: "var(--primary)" }}
-            >
+            <Link href="/leads?tier=HOT" className="inline-flex min-h-6 items-center text-xs" style={{ color: "var(--primary-fg)" }}>
               View all →
-            </a>
+            </Link>
           </div>
           {topLeads.length === 0 ? (
             <div className="px-5 py-8 text-center text-sm" style={{ color: "var(--text-muted)" }}>
@@ -150,7 +126,7 @@ export default async function DashboardPage() {
                     </td>
                     <td className="px-5 py-3">
                       <span
-                        className="text-xs px-2 py-0.5 rounded"
+                        className="text-xs px-2 py-0.5 rounded-sm whitespace-nowrap"
                         style={{ background: "var(--surface-overlay)", color: "var(--text-muted)" }}
                       >
                         {lead.recommended_action?.replace(/_/g, " ") ?? "—"}
@@ -165,7 +141,7 @@ export default async function DashboardPage() {
 
         {/* Recent runs */}
         <section
-          className="rounded-xl border overflow-hidden"
+          className="rounded-xl border overflow-x-auto"
           style={{ background: "var(--surface-raised)", borderColor: "var(--border)" }}
         >
           <div
@@ -175,9 +151,9 @@ export default async function DashboardPage() {
             <h2 className="text-sm font-semibold" style={{ color: "var(--text)" }}>
               Recent Scoring Runs
             </h2>
-            <a href="/runs" className="text-xs" style={{ color: "var(--primary)" }}>
+            <Link href="/runs" className="inline-flex min-h-6 items-center text-xs" style={{ color: "var(--primary-fg)" }}>
               View all →
-            </a>
+            </Link>
           </div>
           {(runs as ScoringRun[]).length === 0 ? (
             <div className="px-5 py-8 text-center text-sm" style={{ color: "var(--text-muted)" }}>
@@ -195,8 +171,8 @@ export default async function DashboardPage() {
                       </span>
                       {run.is_shadow && (
                         <span
-                          className="text-[10px] px-1.5 py-0.5 rounded"
-                          style={{ background: "rgba(99,102,241,0.15)", color: "var(--primary)" }}
+                          className="text-[10px] px-1.5 py-0.5 rounded-sm"
+                          style={{ background: "rgba(99,102,241,0.15)", color: "var(--primary-fg)" }}
                         >
                           shadow
                         </span>

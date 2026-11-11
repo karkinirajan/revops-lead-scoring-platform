@@ -1,12 +1,13 @@
 """
 Celery tasks for async webhook delivery and retry processing.
 """
+
 from __future__ import annotations
 
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
 
@@ -22,7 +23,6 @@ logger = structlog.get_logger(__name__)
     bind=True,
     max_retries=3,
     default_retry_delay=30,
-    queue="sync",
 )
 def deliver_webhook(self, delivery_log_id: str) -> dict:
     """
@@ -30,8 +30,8 @@ def deliver_webhook(self, delivery_log_id: str) -> dict:
     delivery_log_id references the webhook_delivery_logs row.
     """
     from app.database import SessionLocal
-    from app.models.webhook import WebhookDeliveryLog, WebhookDeliveryStatus, Webhook
-    from app.services.webhook_service import _deliver_sync, RETRY_DELAYS
+    from app.models.webhook import Webhook, WebhookDeliveryLog, WebhookDeliveryStatus
+    from app.services.webhook_service import RETRY_DELAYS, _deliver_sync
 
     db = SessionLocal()
     try:
@@ -71,22 +71,23 @@ def deliver_webhook(self, delivery_log_id: str) -> dict:
 
 @celery_app.task(
     name="workers.tasks.webhooks.retry_failed_webhooks",
-    queue="sync",
 )
 def retry_failed_webhooks() -> dict:
     """
     Periodic task: find failed deliveries eligible for retry and re-queue them.
     Runs every 30 minutes via beat schedule.
     """
+    from datetime import timedelta
+
     from sqlalchemy import select
+
     from app.database import SessionLocal
     from app.models.webhook import WebhookDeliveryLog, WebhookDeliveryStatus
     from app.services.webhook_service import MAX_ATTEMPTS
-    from datetime import timedelta
 
     db = SessionLocal()
     try:
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+        cutoff = datetime.now(UTC) - timedelta(hours=24)
         failed = db.scalars(
             select(WebhookDeliveryLog)
             .where(

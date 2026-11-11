@@ -8,39 +8,45 @@ Covers:
   - _deliver_sync with mocked httpx
   - retry_failed_delivery max-attempts guard
 """
+
 import json
-import pytest
-from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 class TestWebhookModel:
     def test_event_list_parsing(self):
         from app.models.webhook import Webhook
+
         wh = Webhook()
         wh.events = "tier_crossed,hot_lead,conversion"
         assert wh.event_list == ["tier_crossed", "hot_lead", "conversion"]
 
     def test_event_list_single(self):
         from app.models.webhook import Webhook
+
         wh = Webhook()
         wh.events = "score_updated"
         assert wh.event_list == ["score_updated"]
 
     def test_tier_filter_list_empty(self):
         from app.models.webhook import Webhook
+
         wh = Webhook()
         wh.tier_filter = None
         assert wh.tier_filter_list == []
 
     def test_tier_filter_list_parsed(self):
         from app.models.webhook import Webhook
+
         wh = Webhook()
         wh.tier_filter = "HOT,WARM"
         assert wh.tier_filter_list == ["HOT", "WARM"]
 
     def test_tier_filter_lowercased_to_upper(self):
         from app.models.webhook import Webhook
+
         wh = Webhook()
         wh.tier_filter = "hot,warm"
         assert wh.tier_filter_list == ["HOT", "WARM"]
@@ -49,6 +55,7 @@ class TestWebhookModel:
 class TestWebhookSchema:
     def test_valid_events(self):
         from app.schemas.webhook import WebhookCreate
+
         wc = WebhookCreate(
             name="Test",
             url="https://example.com/hook",
@@ -57,13 +64,16 @@ class TestWebhookSchema:
         assert "tier_crossed" in wc.events
 
     def test_invalid_event_raises(self):
-        from app.schemas.webhook import WebhookCreate
         from pydantic import ValidationError
+
+        from app.schemas.webhook import WebhookCreate
+
         with pytest.raises(ValidationError):
             WebhookCreate(name="Test", url="https://example.com/hook", events="invalid_event")
 
     def test_secret_not_in_read_schema(self):
         from app.schemas.webhook import WebhookRead
+
         fields = set(WebhookRead.model_fields.keys())
         assert "secret" not in fields
 
@@ -71,6 +81,7 @@ class TestWebhookSchema:
 class TestWebhookPayload:
     def test_build_payload_structure(self):
         from app.services.webhook_service import build_payload
+
         p = build_payload("tier_crossed", "contact-123", {"score": 85, "tier": "HOT"})
         assert p["event"] == "tier_crossed"
         assert p["contact_id"] == "contact-123"
@@ -80,17 +91,21 @@ class TestWebhookPayload:
 
     def test_payload_is_json_serializable(self):
         from app.services.webhook_service import build_payload
+
         p = build_payload("hot_lead", None, {"reason": "demo requested"})
         serialized = json.dumps(p)
         assert "hot_lead" in serialized
 
     def test_hmac_signing(self):
-        import hmac, hashlib
+        import hashlib
+        import hmac
+
         secret = "test-secret-key"
         payload_bytes = b'{"event": "tier_crossed"}'
         expected = hmac.new(secret.encode(), payload_bytes, hashlib.sha256).hexdigest()
 
         from app.services.webhook_service import _sign_payload
+
         result = _sign_payload(secret, payload_bytes)
         assert result == expected
 
@@ -189,6 +204,7 @@ class TestRetryGuard:
         mock_db.get.return_value = log
 
         from app.services.webhook_service import retry_failed_delivery
+
         result = retry_failed_delivery(mock_db, "log-999")
         assert result is False
 

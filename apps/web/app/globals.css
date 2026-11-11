@@ -1,6 +1,35 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+/* The design tokens the old tailwind.config.ts defined, now declared where Tailwind 4 reads them. */
+@theme {
+  --color-surface: #13151f;
+  --color-surface-raised: #1c1f2e;
+  --color-surface-overlay: #242840;
+  --color-border: #2d3148;
+  --color-border-muted: #1e2235;
+  --color-primary: #6366f1;
+  --color-primary-strong: #4f46e5;
+  --color-primary-hover: #4338ca;
+  --color-primary-fg: #818cf8;
+  --color-primary-muted: rgba(99, 102, 241, 0.15);
+  --color-tier-hot: #ef4444;
+  --color-tier-warm: #f97316;
+  --color-tier-cool: #3b82f6;
+  --color-tier-cold: #6b7280;
+  --font-sans: var(--font-inter), system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", monospace;
+}
+
+/* Tailwind 3 drew borders in gray-200 unless told otherwise; Tailwind 4 uses currentColor. This app's borders are the theme border colour. */
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--border);
+  }
+}
 
 :root {
   --bg: #0f1117;
@@ -9,18 +38,25 @@
   --surface-overlay: #242840;
   --border: #2d3148;
   --border-muted: #1e2235;
+  /* Contrast (WCAG AA, 4.5:1 for small text), measured in the rendered app:
+     --primary           fills, rings and borders that carry no text
+     --primary-strong    solid button fills under white text (white on --primary is 4.47:1)
+     --primary-fg        indigo text on the dark surfaces (--primary as text is 3.66:1 on --surface-raised)
+     --text-faint        least important text; 4.6:1 on --surface-overlay, 5.3:1 on --surface-raised */
   --primary: #6366f1;
-  --primary-hover: #4f52d9;
+  --primary-strong: #4f46e5;
+  --primary-hover: #4338ca;
+  --primary-fg: #818cf8;
   --text: #f1f5f9;
   --text-muted: #94a3b8;
-  --text-faint: #4a5568;
+  --text-faint: #8493ab;
   --hot: #ef4444;
   --warm: #f97316;
   --cool: #3b82f6;
   --cold: #6b7280;
   --green: #22c55e;
   --yellow: #eab308;
-  --red: #ef4444;
+  --red: #f87171; /* used for text as well as dots; #ef4444 is 3.9:1 on its own tint */
 }
 
 * {
@@ -31,7 +67,7 @@ html,
 body {
   background-color: var(--bg);
   color: var(--text);
-  font-family: "Inter", system-ui, sans-serif;
+  font-family: var(--font-inter), system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 

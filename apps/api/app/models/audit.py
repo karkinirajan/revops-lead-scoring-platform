@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import DateTime, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -24,7 +24,7 @@ class AuditLog(Base):
     trace_id: Mapped[str | None] = mapped_column(String(64))
     ip_address: Mapped[str | None] = mapped_column(String(45))
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False, index=True
     )
 
 
@@ -45,6 +45,6 @@ class CrmSyncLog(Base):
     payload_hash: Mapped[str | None] = mapped_column(String(64))  # SHA-256 of request body
     attempt_number: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     synced_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False, index=True
     )
     job_id: Mapped[str | None] = mapped_column(String(64), index=True)

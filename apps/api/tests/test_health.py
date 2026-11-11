@@ -1,7 +1,7 @@
 """Smoke tests for observability endpoints — no DB required."""
+
 from unittest.mock import patch
 
-import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app

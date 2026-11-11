@@ -6,148 +6,103 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # ---- Python API ----
-  api-lint:
-    name: API Lint
+  # ---- Python: API and workers (one uv workspace, one lock file) ----
+  python:
+    name: Python ${{ matrix.python }}
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/api
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-      - run: pip install -e ".[dev]"
-      - run: ruff check .
-      - run: ruff format --check .
-
-  api-test:
-    name: API Tests
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/api
-    env:
-      DATABASE_URL: postgresql+psycopg2://revops:revops_pass@localhost:5432/revops
-      REDIS_URL: redis://localhost:6379/0
-      JWT_SECRET_KEY: ci-test-secret
-      APP_ENV: development
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.12 is the oldest supported (requires-python); 3.14 is what .python-version pins.
+        python: ['3.12', '3.14']
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:18-alpine
         env:
           POSTGRES_USER: revops
           POSTGRES_PASSWORD: revops_pass
-          POSTGRES_DB: revops
+          POSTGRES_DB: revops_test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
+          --health-cmd "pg_isready -U revops -d revops_test"
+          --health-interval 5s
           --health-timeout 5s
-          --health-retries 5
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg2://revops:revops_pass@localhost:5432/revops_test
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
         with:
-          python-version: "3.11"
-          cache: pip
-      - run: pip install -e ".[dev]"
-      - run: alembic upgrade head
-      - run: pytest tests/ -v --tb=short --cov=app --cov-report=xml
-      - uses: codecov/codecov-action@v4
-        if: always()
-        with:
-          file: apps/api/coverage.xml
+          version: '0.13.7'
+          enable-cache: true
+      - run: uv sync --locked --all-packages --all-extras --python ${{ matrix.python }}
+      - name: Lint
+        run: uv run ruff check .
+      - name: Format
+        run: uv run ruff format --check .
+      - name: Types
+        run: uv run mypy apps/api/app workers
+      - name: Tests
+        run: uv run --package revops-api pytest apps/api/tests -q --cov=app --cov=workers --cov-report=term-missing:skip-covered
+      - name: Dependency audit
+        if: matrix.python == '3.14'
+        run: uv audit --preview-features audit-command
 
-  # ---- Security scans ----
-  api-security:
-    name: API Security Scan
+  # ---- Web ----
+  web:
+    name: Web (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/api
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-      - run: pip install bandit pip-audit
-      - name: Bandit SAST
-        run: bandit -r app/ -ll -x app/tests
-      - name: Pip audit (dependency vulnerabilities)
-        run: pip-audit -r pyproject.toml --skip-editable || true
-
-  # ---- Next.js ----
-  web-lint:
-    name: Web Lint & Type Check
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['24', '26']
     defaults:
       run:
         working-directory: apps/web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: ${{ matrix.node }}
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
       - run: npm ci
       - run: npm run lint
       - run: npm run type-check
-
-  web-build:
-    name: Web Build
-    runs-on: ubuntu-latest
-    needs: web-lint
-    defaults:
-      run:
-        working-directory: apps/web
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: apps/web/package-lock.json
-      - run: npm ci
+      - run: npm test
       - run: npm run build
         env:
-          NEXT_PUBLIC_API_URL: http://localhost:8000
-          NEXT_TELEMETRY_DISABLED: "1"
+          NEXT_TELEMETRY_DISABLED: '1'
+      - name: Dependency audit (production)
+        if: matrix.node == '26'
+        run: npm audit --omit=dev --audit-level=high
 
-  # ---- Docker image builds ----
-  docker-build:
-    name: Docker Build (${{ matrix.service }})
+  # ---- Docker images (built from the repository root; nothing is pushed) ----
+  docker:
+    name: Docker (${{ matrix.service }})
     runs-on: ubuntu-latest
-    needs: [api-test, web-build]
+    needs: [python, web]
     strategy:
+      fail-fast: false
       matrix:
-        service: [api, web, worker]
+        service: [api, worker, web]
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - name: Build ${{ matrix.service }} image
-        uses: docker/build-push-action@v6
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
         with:
-          context: ${{ matrix.service == 'worker' && './workers' || format('./apps/{0}', matrix.service) }}
+          context: .
+          file: ${{ matrix.service == 'worker' && 'workers/Dockerfile' || format('apps/{0}/Dockerfile', matrix.service) }}
           target: production
           push: false
           tags: revops-${{ matrix.service }}:${{ github.sha }}
@@ -156,8 +111,8 @@ jobs:
 
   # ---- Gate ----
   all-checks:
-    name: All Checks Passed
+    name: All checks passed
     runs-on: ubuntu-latest
-    needs: [api-lint, api-test, api-security, web-lint, web-build, docker-build]
+    needs: [python, web, docker]
     steps:
-      - run: echo "All CI checks passed ✓"
+      - run: echo "All CI checks passed"

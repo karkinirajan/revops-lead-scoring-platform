@@ -26,7 +26,7 @@ export function TriggerRunButton() {
         onClick={handleClick}
         disabled={loading}
         className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white disabled:opacity-60 transition-colors"
-        style={{ background: "var(--primary)" }}
+        style={{ background: "var(--primary-strong)" }}
       >
         {loading ? (
           <>

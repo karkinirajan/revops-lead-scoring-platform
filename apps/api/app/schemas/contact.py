@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import EmailStr, field_validator
+from pydantic import EmailStr
 
 from app.schemas.common import OrmBase
 

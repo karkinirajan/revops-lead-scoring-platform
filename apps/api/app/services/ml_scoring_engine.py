@@ -7,18 +7,18 @@ Falls back to v1 deterministic engine if no champion model is available.
 Shadow mode: both v1 and v2 run on every contact; only v2 scores are flagged
 is_shadow=True so they don't affect CRM sync until promoted.
 """
+
 from __future__ import annotations
 
 import math
-import os
-import pickle
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import structlog
 
-from app.services.scoring_engine import FeatureVector, ScoreResult, score_contact as score_v1
+from app.config import get_settings
+from app.services.scoring_engine import FeatureVector, ScoreResult, tier_for
+from app.services.scoring_engine import score_contact as score_v1
 
 logger = structlog.get_logger(__name__)
 
@@ -39,27 +39,44 @@ FEATURE_COLUMNS = [
     "integrations_count",
     "sessions_7d",
     "days_since_last_activity",
-    "company_size_enterprise",   # one-hot
+    "company_size_enterprise",  # one-hot
     "company_size_mid_market",
     "company_size_smb",
 ]
 
 
+def resolve_artifact(artifact_path: str) -> Path:
+    """The model file to load, if it is allowed: an XGBoost JSON file inside the models directory (ML_MODELS_DIR).
+
+    The path comes from a database row, and a pickle file executes code when it is loaded, so neither another folder nor another format is accepted.
+    Models trained before this check were saved as pickles (`.pkl`); retrain them (`python -m workers.training.train_model`).
+    """
+    models_dir = Path(get_settings().ml_models_dir).resolve()
+    path = Path(artifact_path).resolve()
+    if path.suffix != ".json":
+        raise ValueError(
+            f"model artifact must be an XGBoost .json file (pickle models are no longer loaded): {artifact_path}"
+        )
+    if not path.is_relative_to(models_dir):
+        raise ValueError(f"model artifact is outside the models directory: {artifact_path}")
+    if not path.is_file():
+        raise FileNotFoundError(f"Model artifact not found: {artifact_path}")
+    return path
+
+
 def _load_model(artifact_path: str) -> Any:
-    """Load and cache a pickled XGBoost model."""
+    """Load (and cache) an XGBoost booster saved with `Booster.save_model(...json)`."""
     if artifact_path in _MODEL_CACHE:
         return _MODEL_CACHE[artifact_path]
 
-    path = Path(artifact_path)
-    if not path.exists():
-        raise FileNotFoundError(f"Model artifact not found: {artifact_path}")
+    import xgboost as xgb
 
-    with path.open("rb") as f:
-        model = pickle.load(f)
+    booster = xgb.Booster()
+    booster.load_model(str(resolve_artifact(artifact_path)))
 
-    _MODEL_CACHE[artifact_path] = model
+    _MODEL_CACHE[artifact_path] = booster
     logger.info("ml_model_loaded", path=artifact_path)
-    return model
+    return booster
 
 
 def _feature_vector_to_row(features: FeatureVector) -> list[float]:
@@ -85,19 +102,6 @@ def _feature_vector_to_row(features: FeatureVector) -> list[float]:
     ]
 
 
-def _tier_from_score(score: int) -> str:
-    from app.models.scoring import PriorityTier
-    from app.config import get_settings
-    s = get_settings()
-    if score >= s.scoring_hot_threshold:
-        return PriorityTier.HOT
-    if score >= s.scoring_warm_threshold:
-        return PriorityTier.WARM
-    if score >= s.scoring_cool_threshold:
-        return PriorityTier.COOL
-    return PriorityTier.COLD
-
-
 def score_contact_ml(features: FeatureVector, artifact_path: str, model_version: str) -> ScoreResult:
     """
     Score a contact using the loaded XGBoost model.
@@ -105,31 +109,25 @@ def score_contact_ml(features: FeatureVector, artifact_path: str, model_version:
     """
     try:
         model = _load_model(artifact_path)
-    except FileNotFoundError:
-        logger.warning("ml_model_not_found_fallback_v1", path=artifact_path)
+    except (
+        Exception
+    ) as exc:  # missing, refused, unreadable, or xgboost not installed: the deterministic v1 model still scores
+        logger.warning("ml_model_unavailable_fallback_v1", path=artifact_path, error=str(exc))
         return score_v1(features)
 
     try:
         row = _feature_vector_to_row(features)
-        # XGBoost booster: predict_proba via DMatrix
-        try:
-            import xgboost as xgb
-            dmatrix = xgb.DMatrix([row], feature_names=FEATURE_COLUMNS)
-            prob = float(model.predict(dmatrix)[0])
-        except (ImportError, AttributeError):
-            # sklearn-compatible interface (Pipeline / XGBClassifier)
-            import numpy as np
-            arr = np.array([row])
-            prob = float(model.predict_proba(arr)[0][1])
+        import xgboost as xgb
+
+        prob = float(model.predict(xgb.DMatrix([row], feature_names=FEATURE_COLUMNS))[0])
 
         lead_score = max(0, min(100, math.floor(prob * 100)))
-        tier = _tier_from_score(lead_score)
+        tier = tier_for(lead_score)
 
         # Build feature contributions from model feature importances
         try:
             importances = model.get_score(importance_type="gain")
-            contributions = {k: round(importances.get(k, 0) * row[i], 2)
-                             for i, k in enumerate(FEATURE_COLUMNS)}
+            contributions = {k: round(importances.get(k, 0) * row[i], 2) for i, k in enumerate(FEATURE_COLUMNS)}
         except Exception:
             contributions = {}
 
@@ -141,8 +139,8 @@ def score_contact_ml(features: FeatureVector, artifact_path: str, model_version:
         )[:3]
         reason = "ML signals: " + ", ".join(f"{k.replace('_', ' ')} ({v:.1f})" for k, v in top) if top else "ML scored"
 
-        from app.models.scoring import PriorityTier
         from app.services.scoring_engine import SCORE_CONFIG
+
         action = SCORE_CONFIG["recommended_actions"].get(tier, "monitor")
 
         return ScoreResult(
@@ -165,9 +163,10 @@ def get_champion_model_path() -> tuple[str, str] | None:
     Returns None if no champion exists (will fall back to v1).
     """
     try:
+        from sqlalchemy import select
+
         from app.database import SessionLocal
         from app.models.model_registry import ModelRegistry, ModelStage
-        from sqlalchemy import select
 
         db = SessionLocal()
         try:

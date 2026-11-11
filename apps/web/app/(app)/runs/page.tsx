@@ -1,17 +1,10 @@
+import { apiFetch } from "@/lib/server/api";
 import type { ScoringRun } from "@/lib/types";
 import { TriggerRunButton } from "@/components/dashboard/TriggerRunButton";
 import { formatDistanceToNow, format } from "date-fns";
 
-const API = process.env.API_INTERNAL_URL ?? "http://localhost:8000";
-
 async function getRuns(): Promise<ScoringRun[]> {
-  try {
-    const res = await fetch(`${API}/api/v1/scoring/runs?limit=50`, { next: { revalidate: 15 } });
-    if (!res.ok) return [];
-    return res.json();
-  } catch {
-    return [];
-  }
+  return apiFetch<ScoringRun[]>("/scoring/runs?limit=50");
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -26,8 +19,8 @@ export default async function RunsPage() {
   const runs = await getRuns();
 
   return (
-    <div className="p-8 max-w-5xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
+    <div className="p-4 sm:p-8 max-w-5xl mx-auto">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
         <div>
           <h1 className="text-2xl font-bold" style={{ color: "var(--text)" }}>Run History</h1>
           <p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>
@@ -37,10 +30,10 @@ export default async function RunsPage() {
         <TriggerRunButton />
       </div>
 
-      <div className="rounded-xl border overflow-hidden" style={{ background: "var(--surface-raised)", borderColor: "var(--border)" }}>
+      <div className="rounded-xl border overflow-x-auto" style={{ background: "var(--surface-raised)", borderColor: "var(--border)" }}>
         {runs.length === 0 ? (
           <div className="px-5 py-16 text-center text-sm" style={{ color: "var(--text-muted)" }}>
-            No scoring runs yet. Click "Run Scoring" to start one.
+            No scoring runs yet. Click &ldquo;Run Scoring&rdquo; to start one.
           </div>
         ) : (
           <table className="w-full text-sm">
@@ -63,7 +56,7 @@ export default async function RunsPage() {
                   <td className="px-5 py-3 font-mono text-xs" style={{ color: "var(--text)" }}>
                     v{run.model_version}
                     {run.is_shadow && (
-                      <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded" style={{ background: "rgba(99,102,241,0.15)", color: "var(--primary)" }}>
+                      <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-sm" style={{ background: "rgba(99,102,241,0.15)", color: "var(--primary-fg)" }}>
                         shadow
                       </span>
                     )}
