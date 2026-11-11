@@ -8,6 +8,9 @@
 #    not an integer, so both are refused a line later; the guard returns early and skips the HMAC);
 #  - urls._is_public: the explicit IPv4-mapped conversion (Python 3.12.4 and later, and 3.13, judge `::ffff:10.0.0.1` correctly themselves; the conversion is
 #    kept for earlier 3.12 patch releases, which `requires-python` still allows);
+#  - urls._TRANSLATION_NETWORKS: the NAT64 local-use prefix (64:ff9b:1::/48), 6to4 (2002::/16) and Teredo (2001::/32) entries (Python 3.12.16 and 3.14.9 already
+#    judge those ranges non-public themselves, so no input tells the entry apart; they stay as the explicit statement of the rule, in case a Python release
+#    changes its table). The NAT64 well-known prefix (64:ff9b::/96) is listed: Python calls it public;
 #  - urls.ensure_salesforce_instance_url: dropping `if s.strip()` from the suffix list (an empty suffix becomes "." and no host ends with that), and the host's
 #    `.lower()` (urlsplit's hostname is already lower-case, so it was removed).
 #
@@ -128,7 +131,7 @@ M = [
     (
         "jwt: the subject is not read from the token",
         JW,
-        'subject = decode_token(token, expected_type)["sub"]',
+        'subject = claims["sub"]',
         'subject = "00000000-0000-4000-8000-000000000000"',
     ),
     (
@@ -159,8 +162,8 @@ M = [
     (
         "deps: a refresh token accepted as access",
         DP,
-        "user_id_from_token(token, ACCESS)",
-        'user_id_from_token(token, "refresh")',
+        "user_for_token(db, token, ACCESS)",
+        'user_for_token(db, token, "refresh")',
     ),
     ("deps: a deleted user stays signed in", DP, "if user is None or not user.is_active:", "if not user.is_active:"),
     ("deps: a deactivated user stays signed in", DP, "if user is None or not user.is_active:", "if user is None:"),
@@ -237,20 +240,8 @@ M = [
     (
         "auth: refresh accepts an access token",
         AU,
-        "user_id_from_token(body.refresh_token, REFRESH)",
-        'user_id_from_token(body.refresh_token, "access")',
-    ),
-    (
-        "auth: refresh for a deactivated user",
-        AU,
-        "    if user is None or not user.is_active:\n        raise invalid",
-        "    if user is None:\n        raise invalid",
-    ),
-    (
-        "auth: refresh for a deleted user",
-        AU,
-        "    if user is None or not user.is_active:\n        raise invalid",
-        "    if not user.is_active:\n        raise invalid",
+        "user_for_token(db, body.refresh_token, REFRESH)",
+        'user_for_token(db, body.refresh_token, "access")',
     ),
     (
         "auth: a duplicate email accepted",
@@ -1103,5 +1094,57 @@ M = [
         CL,
         "                previous = latest_live_score(db, contact.id)\n",
         "                previous = None\n",
+    ),
+    ("urls: NAT64 (well-known prefix) allowed", UR, '"64:ff9b::/96", ', ""),
+    (
+        "urls: translation ranges not checked",
+        UR,
+        "        elif any(ip in network for network in _TRANSLATION_NETWORKS):",
+        "        elif False:",
+    ),
+    (
+        "urls: a translation range is only noted",
+        UR,
+        "            return False\n    return ip.is_global",
+        "            pass\n    return ip.is_global",
+    ),
+    (
+        "config: Salesforce hosts default includes force.com",
+        CF,
+        'salesforce_allowed_domains: str = ".salesforce.com"',
+        'salesforce_allowed_domains: str = ".salesforce.com,.force.com"',
+    ),
+    ("jwt: the password version never changes", JW, "return digest.hexdigest()[:32]", 'return "0" * 32'),
+    (
+        "jwt: the password version is not keyed",
+        JW,
+        "hmac.new(get_settings().jwt_secret_key.encode(), hashed_password.encode(), hashlib.sha256)",
+        'hmac.new(b"", hashed_password.encode(), hashlib.sha256)',
+    ),
+    (
+        "jwt: any password version matches",
+        JW,
+        "return hmac.compare_digest(tag.encode(), password_version(hashed_password).encode())",
+        "return True",
+    ),
+    ("jwt: a token without a password version accepted", JW, "if not isinstance(version, str):", "if False:"),
+    ("jwt: a non-text password version accepted", JW, "if not isinstance(version, str):", "if version is None:"),
+    (
+        "deps: a changed password keeps the session",
+        DP,
+        "if not password_version_matches(version, user.hashed_password):",
+        "if False:",
+    ),
+    (
+        "auth: access tokens carry no password version",
+        AU,
+        'extra={"role": user.role, "email": user.email, **version}',
+        'extra={"role": user.role, "email": user.email}',
+    ),
+    (
+        "auth: refresh tokens carry no password version",
+        AU,
+        "create_refresh_token(user.id, extra=version)",
+        "create_refresh_token(user.id)",
     ),
 ]

@@ -7,12 +7,12 @@ from app.auth import jwt as tokens
 from app.config import get_settings
 
 
-def _token_for(subject, kind):
-    """A correctly signed token whose subject is whatever is given (only our own key could make one, but the checks should not depend on that)."""
+def _token_for(subject, kind, **claims):
+    """A correctly signed token whose subject and extra claims are whatever is given (only our own key could make one, but the checks should not depend on that)."""
     settings = get_settings()
     now = datetime.now(UTC)
     return jwt.encode(
-        {"sub": subject, "iat": now, "exp": now + timedelta(minutes=5), "type": kind},
+        {"sub": subject, "iat": now, "exp": now + timedelta(minutes=5), "type": kind, **claims},
         settings.jwt_secret_key,
         algorithm=settings.jwt_algorithm,
     )
@@ -76,20 +76,50 @@ class TestTokens:
         claims = tokens.decode_token(token)
         assert claims["sub"] == "user-1" and claims["role"] == "admin" and claims["type"] == "access"
 
-    def test_the_user_id_is_the_subject(self):
-        user_id = "0b7ce2c0-1111-4222-8333-444455556666"
-        assert tokens.user_id_from_token(tokens.create_access_token(user_id), tokens.ACCESS) == user_id
-        assert tokens.user_id_from_token(tokens.create_refresh_token(user_id), tokens.REFRESH) == user_id
+    def test_the_user_id_and_password_version_are_read_from_the_token(self):
+        user_id, version = "0b7ce2c0-1111-4222-8333-444455556666", "v1"
+        claims = {tokens.PASSWORD_VERSION_CLAIM: version}
+        assert tokens.subject_from_token(tokens.create_access_token(user_id, extra=claims), tokens.ACCESS) == (
+            user_id,
+            version,
+        )
+        assert tokens.subject_from_token(tokens.create_refresh_token(user_id, extra=claims), tokens.REFRESH) == (
+            user_id,
+            version,
+        )
 
     @pytest.mark.parametrize("subject", ["", "not-a-uuid", "12345"])
     def test_a_subject_that_is_not_a_uuid_is_an_invalid_token(self, subject):
         with pytest.raises(tokens.TokenError, match="not a user id"):
-            tokens.user_id_from_token(_token_for(subject, "access"), tokens.ACCESS)
+            tokens.subject_from_token(_token_for(subject, "access", pwv="v"), tokens.ACCESS)
+
+    @pytest.mark.parametrize("claims", [{}, {"pwv": 5}, {"pwv": None}, {"pwv": ["v"]}])
+    def test_a_token_without_a_password_version_is_refused(self, claims):
+        with pytest.raises(tokens.TokenError, match="no password version"):
+            tokens.subject_from_token(
+                _token_for("0b7ce2c0-1111-4222-8333-444455556666", "access", **claims), tokens.ACCESS
+            )
 
     def test_the_user_id_is_read_only_from_the_right_kind_of_token(self):
         user_id = "0b7ce2c0-1111-4222-8333-444455556666"
         with pytest.raises(tokens.TokenError):
-            tokens.user_id_from_token(tokens.create_refresh_token(user_id), tokens.ACCESS)
+            tokens.subject_from_token(tokens.create_refresh_token(user_id, extra={"pwv": "v"}), tokens.ACCESS)
+
+    def test_the_password_version_follows_the_hash(self):
+        first, second = tokens.hash_password("correct-horse-battery"), tokens.hash_password("correct-horse-battery")
+        assert first != second  # bcrypt salts: the same password, a different hash
+        assert tokens.password_version(first) == tokens.password_version(first)
+        assert tokens.password_version(first) != tokens.password_version(second)
+        assert tokens.password_version_matches(tokens.password_version(first), first)
+        assert not tokens.password_version_matches(tokens.password_version(first), second)
+        assert not tokens.password_version_matches("", first)
+
+    def test_the_password_version_does_not_reveal_the_hash_and_depends_on_the_signing_key(self, monkeypatch):
+        hashed = tokens.hash_password("correct-horse-battery")
+        version = tokens.password_version(hashed)
+        assert len(version) == 32 and version not in hashed and hashed[7:20] not in version
+        monkeypatch.setattr(get_settings(), "jwt_secret_key", "another-signing-key-of-sufficient-length-0123456789")
+        assert tokens.password_version(hashed) != version
 
     def test_a_refresh_token_is_not_an_access_token(self):
         refresh = tokens.create_refresh_token("user-1")
@@ -281,6 +311,57 @@ class TestRefresh:
         assert client.post("/api/v1/auth/refresh", json={"refresh_token": pair["refresh_token"]}).status_code == 401
 
 
+class TestSessionsEndWithThePassword:
+    OLD, NEW = "correct-horse-battery", "a-different-password-now"
+
+    def _login(self, client, make_user):
+        user = make_user(email="ada@example.com", password=self.OLD)
+        pair = client.post("/api/v1/auth/login", json={"email": "ada@example.com", "password": self.OLD}).json()
+        return user, pair
+
+    @staticmethod
+    def _me(client, token):
+        return client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"}).status_code
+
+    @staticmethod
+    def _refresh(client, token):
+        return client.post("/api/v1/auth/refresh", json={"refresh_token": token}).status_code
+
+    def test_tokens_stay_valid_while_the_password_is_unchanged(self, client, make_user):
+        _, pair = self._login(client, make_user)
+        assert self._me(client, pair["access_token"]) == 200
+        assert self._refresh(client, pair["refresh_token"]) == 200
+        assert self._refresh(client, pair["refresh_token"]) == 200  # refresh tokens are not single-use
+
+    def test_changing_the_password_ends_the_sessions_opened_under_the_old_one(self, client, make_user, db):
+        user, pair = self._login(client, make_user)
+        user.hashed_password = tokens.hash_password(self.NEW)
+        db.commit()
+        assert self._me(client, pair["access_token"]) == 401
+        assert self._refresh(client, pair["refresh_token"]) == 401
+
+    def test_signing_in_again_with_the_new_password_gives_working_tokens(self, client, make_user, db):
+        user, _ = self._login(client, make_user)
+        user.hashed_password = tokens.hash_password(self.NEW)
+        db.commit()
+        fresh = client.post("/api/v1/auth/login", json={"email": "ada@example.com", "password": self.NEW}).json()
+        assert self._me(client, fresh["access_token"]) == 200
+        again = client.post("/api/v1/auth/refresh", json={"refresh_token": fresh["refresh_token"]}).json()
+        assert self._me(client, again["access_token"]) == 200  # the refreshed pair carries the same version
+
+    def test_a_token_from_before_password_versions_is_refused(self, client, make_user):
+        user = make_user()
+        assert self._me(client, tokens.create_access_token(user.id)) == 401
+        assert self._refresh(client, tokens.create_refresh_token(user.id)) == 401
+
+    def test_another_users_password_version_does_not_work(self, client, make_user):
+        ada = make_user(email="ada@example.com")
+        grace = make_user(email="grace@example.com")
+        claims = {tokens.PASSWORD_VERSION_CLAIM: tokens.password_version(grace.hashed_password)}
+        assert self._me(client, tokens.create_access_token(ada.id, extra=claims)) == 401
+        assert self._refresh(client, tokens.create_refresh_token(ada.id, extra=claims)) == 401
+
+
 class TestAccess:
     def test_no_token_is_a_401(self, client):
         assert client.get("/api/v1/auth/me").status_code == 401
@@ -289,19 +370,19 @@ class TestAccess:
         assert client.get("/api/v1/auth/me", headers={"Authorization": "Basic abc"}).status_code == 401
         assert client.get("/api/v1/auth/me", headers={"Authorization": "Bearer"}).status_code == 401
 
-    def test_a_token_for_a_deactivated_user_stops_working(self, client, make_user, db):
+    def test_a_token_for_a_deactivated_user_stops_working(self, client, make_user, db, bearer):
         user = make_user()
-        headers = {"Authorization": f"Bearer {tokens.create_access_token(user.id)}"}
+        headers = bearer(user)
         assert client.get("/api/v1/auth/me", headers=headers).status_code == 200
         user.is_active = False
         db.commit()
         assert client.get("/api/v1/auth/me", headers=headers).status_code == 401
 
-    def test_a_token_for_a_deleted_user_stops_working(self, client, make_user, db):
+    def test_a_token_for_a_deleted_user_stops_working(self, client, make_user, db, bearer):
         from app.models.user import User
 
         user = make_user()
-        headers = {"Authorization": f"Bearer {tokens.create_access_token(user.id)}"}
+        headers = bearer(user)
         db.query(User).delete()
         db.commit()
         assert client.get("/api/v1/auth/me", headers=headers).status_code == 401
@@ -310,14 +391,14 @@ class TestAccess:
     def test_a_token_whose_subject_is_not_a_user_id_is_a_401_not_a_500(self, client, subject):
         assert (
             client.get(
-                "/api/v1/auth/me", headers={"Authorization": f"Bearer {_token_for(subject, 'access')}"}
+                "/api/v1/auth/me", headers={"Authorization": f"Bearer {_token_for(subject, 'access', pwv='v')}"}
             ).status_code
             == 401
         )
 
     @pytest.mark.parametrize("subject", ["", "not-a-uuid", "12345"])
     def test_refreshing_with_such_a_token_is_a_401_not_a_500(self, client, subject):
-        resp = client.post("/api/v1/auth/refresh", json={"refresh_token": _token_for(subject, "refresh")})
+        resp = client.post("/api/v1/auth/refresh", json={"refresh_token": _token_for(subject, "refresh", pwv="v")})
         assert resp.status_code == 401
 
     def test_roles_are_enforced(self, client, auth):

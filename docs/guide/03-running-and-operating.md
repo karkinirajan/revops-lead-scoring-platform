@@ -40,7 +40,7 @@ All settings are environment variables, read by `apps/api/app/config.py` (and li
 | `HUBSPOT_ACCESS_TOKEN`, `HUBSPOT_PORTAL_ID` | empty | to sync with HubSpot |
 | `HUBSPOT_WEBHOOK_SECRET` | empty | the HubSpot app's client secret; **the deal-won webhook is refused without it** |
 | `PUBLIC_API_URL` | empty | the public base URL HubSpot calls, e.g. `https://example.com`. Needed behind a proxy so the signature can be checked |
-| `SALESFORCE_CLIENT_ID`, `_SECRET`, `_REDIRECT_URI` | empty | to connect Salesforce; `SALESFORCE_ALLOWED_DOMAINS` limits where the token is sent |
+| `SALESFORCE_CLIENT_ID`, `_SECRET`, `_REDIRECT_URI` | empty | to connect Salesforce; `SALESFORCE_ALLOWED_DOMAINS` (default `.salesforce.com`) limits where the token is sent |
 | `ANTHROPIC_API_KEY`, `AI_MODEL` | empty, `claude-sonnet-5-5` | the AI reports; without the key those endpoints answer 503 and nothing else is affected |
 | `BCRYPT_ROUNDS`, `JWT_ACCESS_TOKEN_EXPIRE_MINUTES`, `JWT_REFRESH_TOKEN_EXPIRE_DAYS` | 12, 60, 7 | |
 | `RATE_LIMIT_PER_MINUTE`, `RATE_LIMIT_LOGIN_PER_MINUTE` | 100, 10 | per client address |
@@ -85,7 +85,7 @@ Health: `GET /health` (the process is up), `GET /ready` (the database answers; 5
 * **`APP_SECRET_KEY`**: stored CRM tokens become unreadable. Reconnect HubSpot and Salesforce afterwards. Do it deliberately, not by accident.
 * **`HUBSPOT_WEBHOOK_SECRET`**: change it in HubSpot's app settings and here at the same time.
 * **A webhook's signing secret** is shown once at creation; to rotate it, delete and recreate the webhook.
-* **A user's password**: `make set-password EMAIL=someone@example.com` asks for a new one (twice, hidden) and sets it. There is no password-change endpoint yet. `ADMIN_PASSWORD` is used only by `seed`, and only when the admin does not exist yet, so changing it later changes nothing.
+* **A user's password**: `make set-password EMAIL=someone@example.com` asks for a new one (twice, hidden) and sets it; every session open under the old password ends. There is no password-change endpoint yet. `ADMIN_PASSWORD` is used only by `seed`, and only when the admin does not exist yet, so changing it later changes nothing.
 
 ## When something is wrong
 

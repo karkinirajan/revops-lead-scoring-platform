@@ -100,7 +100,7 @@ class Settings(BaseSettings):
     # (for local development against a test receiver; never in production).
     webhook_allow_private_targets: bool = False
     # Salesforce instance URLs must end with one of these (comma-separated); they receive the stored access token.
-    salesforce_allowed_domains: str = ".salesforce.com,.force.com"
+    salesforce_allowed_domains: str = ".salesforce.com"
 
     # AI Intelligence (Claude API)
     anthropic_api_key: str = ""

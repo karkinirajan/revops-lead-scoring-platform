@@ -8,7 +8,7 @@ make lint              # ruff, mypy, eslint, tsc
 make mutation          # the mutation check, API then web (slow: one test run per mutant)
 ```
 
-As of the modernisation: **788 API and worker tests** (on Python 3.12.16 and 3.14.9) and **473 web tests**, all passing.
+As of the modernisation: **810 API and worker tests** (on Python 3.12.16 and 3.14.9) and **473 web tests**, all passing.
 
 ## API and workers
 
@@ -65,7 +65,7 @@ cd apps/web && python3 test/mutation/mutate.py test/mutation/mutants.py -- npx v
 
 Do not edit the repository while it runs: it rewrites the files it mutates, in place.
 
-**Results.** API: **229 of 229 killed** in one run (about 35 minutes). Web: **289 of 289 killed** in one run (about 15 minutes).
+**Results.** API: **239 of 239 killed** in one run. Web: **289 of 289 killed** in one run (about 15 minutes).
 
 **What it found.** The first full runs left 28 survivors in the API list and 12 in the web list. Almost all were tests that were too loose, for example a settings test that set all four secrets at once (so two flags swapped by mistake still matched), a "null stays null" test that checked the raw column and never read it back through the ORM, an error-message match that bcrypt's own message also satisfied, and a response-header check that passed vacuously on an empty list. Each got a test that fails without the line it guards.
 

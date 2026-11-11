@@ -437,9 +437,9 @@ class TestSalesforceOAuth:
         )
         assert resp.status_code == 400 and calls == []
 
-    def test_an_access_token_is_not_a_state(self, client, auth, oauth_settings, monkeypatch, make_user):
+    def test_an_access_token_is_not_a_state(self, client, bearer, oauth_settings, monkeypatch, make_user):
         user = make_user(email="boss@example.com", role="admin")
-        headers = {"Authorization": f"Bearer {create_access_token(user.id)}"}
+        headers = bearer(user)
         calls = self._exchange(monkeypatch, self._token_response())
         resp = client.post(
             f"/api/v1/integrations/salesforce/oauth/callback?code=c&state={create_access_token(user.id)}",

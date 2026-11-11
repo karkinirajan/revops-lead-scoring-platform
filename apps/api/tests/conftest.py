@@ -193,13 +193,23 @@ def make_user(db):
 
 
 @pytest.fixture()
-def auth(make_user):
+def bearer():
+    """Authorization headers with an access token for the given user, carrying what the login endpoint puts in one."""
+    from app.auth.jwt import PASSWORD_VERSION_CLAIM, create_access_token, password_version
+
+    def _bearer(user):
+        claims = {"role": user.role, PASSWORD_VERSION_CLAIM: password_version(user.hashed_password)}
+        return {"Authorization": f"Bearer {create_access_token(user.id, extra=claims)}"}
+
+    return _bearer
+
+
+@pytest.fixture()
+def auth(make_user, bearer):
     """Authorization headers for a new user with the given role."""
-    from app.auth.jwt import create_access_token
 
     def _auth(role="viewer", email=None):
-        user = make_user(email=email or f"{role}-{uuid.uuid4().hex[:8]}@example.com", role=role)
-        return {"Authorization": f"Bearer {create_access_token(user.id, extra={'role': user.role})}"}
+        return bearer(make_user(email=email or f"{role}-{uuid.uuid4().hex[:8]}@example.com", role=role))
 
     return _auth
 

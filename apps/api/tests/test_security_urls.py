@@ -35,12 +35,37 @@ class TestEnsurePublicUrl:
             "fc00::1",
             "::ffff:127.0.0.1",  # an IPv4 address written as IPv6
             "::ffff:10.0.0.1",
+            "64:ff9b::a00:1",  # NAT64 of 10.0.0.1
+            "64:ff9b::808:808",  # NAT64 of a public address: refused too, a translator is not a route we rely on
+            "64:ff9b:1::1",  # NAT64, local-use prefix
+            "2002:a00:1::1",  # 6to4 of 10.0.0.1
+            "2001:0:4136:e378:8000:63bf:3fff:fdd2",  # Teredo
         ],
     )
     def test_a_host_that_resolves_to_a_non_public_address_is_refused(self, monkeypatch, address):
         resolving_to(monkeypatch, address)
         with pytest.raises(UnsafeUrlError, match="non-public address"):
             ensure_public_url("https://sneaky.example.com/")
+
+    @pytest.mark.parametrize("address", ["2606:4700:4700::1111", "2001:4860:4860::8888", "2a00:1450:4001:81b::200e"])
+    def test_ordinary_public_ipv6_addresses_are_accepted(self, monkeypatch, address):
+        resolving_to(monkeypatch, address)
+        assert ensure_public_url("https://v6.example.com/") == "https://v6.example.com/"
+
+    def test_the_edges_of_the_translation_ranges(self, monkeypatch):
+        for outside in ("64:ff9a:ffff:ffff:ffff:ffff:ffff:ffff", "2003::1", "2001:1::1", "64:ff9b:2::1"):
+            resolving_to(monkeypatch, outside)
+            assert ensure_public_url("https://edge.example.com/")  # next to a range, but not in it
+        for inside in (
+            "64:ff9b::",
+            "64:ff9b::ffff:ffff",
+            "64:ff9b:1:ffff:ffff:ffff:ffff:ffff",
+            "2002:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+            "2001:0:ffff:ffff:ffff:ffff:ffff:ffff",
+        ):
+            resolving_to(monkeypatch, inside)
+            with pytest.raises(UnsafeUrlError):
+                ensure_public_url("https://edge.example.com/")
 
     def test_one_private_address_among_public_ones_is_enough_to_refuse(self, monkeypatch):
         resolving_to(monkeypatch, "93.184.216.34", "10.0.0.1")
@@ -142,7 +167,6 @@ class TestSalesforceInstanceUrl:
             "https://acme.my.salesforce.com/",
             "https://acme--sandbox.sandbox.my.salesforce.com",
             "https://na1.salesforce.com",
-            "https://acme.lightning.force.com",
             "https://ACME.My.Salesforce.COM",
         ],
     )
@@ -156,6 +180,8 @@ class TestSalesforceInstanceUrl:
             "https://salesforce.com.evil.example.com",
             "https://evilsalesforce.com",
             "https://notsalesforce.com",
+            "https://acme.lightning.force.com",  # the Lightning UI and customer-hosted sites, not API hosts: not in the default list
+            "https://acme.secure.force.com",
             "https://salesforce.com",  # the bare apex: only subdomains are Salesforce instances
             "http://acme.my.salesforce.com",
             "https://acme.my.salesforce.com@evil.example.com",

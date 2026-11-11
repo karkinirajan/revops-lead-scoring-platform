@@ -5,15 +5,16 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import AdminRequired, CurrentUser
+from app.auth.dependencies import AdminRequired, CurrentUser, user_for_token
 from app.auth.jwt import (
+    PASSWORD_VERSION_CLAIM,
     REFRESH,
     TokenError,
     create_access_token,
     create_refresh_token,
     hash_password,
+    password_version,
     spend_password_time,
-    user_id_from_token,
     verify_password,
 )
 from app.config import get_settings
@@ -27,9 +28,10 @@ settings = get_settings()
 
 
 def _tokens_for(user: User) -> TokenResponse:
+    version = {PASSWORD_VERSION_CLAIM: password_version(user.hashed_password)}
     return TokenResponse(
-        access_token=create_access_token(user.id, extra={"role": user.role, "email": user.email}),
-        refresh_token=create_refresh_token(user.id),
+        access_token=create_access_token(user.id, extra={"role": user.role, "email": user.email, **version}),
+        refresh_token=create_refresh_token(user.id, extra=version),
         expires_in=settings.jwt_access_token_expire_minutes * 60,
     )
 
@@ -63,12 +65,9 @@ def refresh(request: Request, body: RefreshRequest, db: Annotated[Session, Depen
         status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token", headers={"WWW-Authenticate": "Bearer"}
     )
     try:
-        user_id = user_id_from_token(body.refresh_token, REFRESH)
+        user = user_for_token(db, body.refresh_token, REFRESH)
     except TokenError:
         raise invalid from None
-    user = db.get(User, user_id)
-    if user is None or not user.is_active:
-        raise invalid
     return _tokens_for(user)
 
 

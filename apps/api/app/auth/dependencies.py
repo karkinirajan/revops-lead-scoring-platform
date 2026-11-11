@@ -4,7 +4,7 @@ from fastapi import Depends, HTTPException, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
-from app.auth.jwt import ACCESS, TokenError, user_id_from_token
+from app.auth.jwt import ACCESS, TokenError, password_version_matches, subject_from_token
 from app.database import get_db
 from app.models.user import User, UserRole
 
@@ -17,6 +17,17 @@ def _get_token(credentials: HTTPAuthorizationCredentials | None = Security(beare
     return credentials.credentials
 
 
+def user_for_token(db: Session, token: str, expected_type: str) -> User:
+    """The user a token was issued to. Raises TokenError if the token is no good, the user is gone or inactive, or the password has changed since the token was issued."""
+    user_id, version = subject_from_token(token, expected_type)
+    user = db.get(User, user_id)
+    if user is None or not user.is_active:
+        raise TokenError("the user does not exist or is inactive")
+    if not password_version_matches(version, user.hashed_password):
+        raise TokenError("the password has changed since the token was issued")
+    return user
+
+
 def get_current_user(
     token: Annotated[str, Depends(_get_token)],
     db: Annotated[Session, Depends(get_db)],
@@ -27,14 +38,9 @@ def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        user_id = user_id_from_token(token, ACCESS)
+        return user_for_token(db, token, ACCESS)
     except TokenError:
         raise credentials_exception from None
-
-    user = db.get(User, user_id)
-    if user is None or not user.is_active:
-        raise credentials_exception
-    return user
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]

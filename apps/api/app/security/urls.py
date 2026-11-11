@@ -34,10 +34,20 @@ def _scheme_and_host(url: str, *, allow_http: bool) -> tuple[str, str]:
     return parts.scheme, host
 
 
+# IPv6 ranges that carry an IPv4 address inside them: NAT64 (the well-known and the local-use prefix), 6to4 and Teredo. Python calls most of them global, but on a
+# network with a translator the connection ends at the embedded IPv4 address, which may be an internal one. No webhook receiver needs to be reachable only that way.
+_TRANSLATION_NETWORKS = tuple(
+    ipaddress.ip_network(n) for n in ("64:ff9b::/96", "64:ff9b:1::/48", "2002::/16", "2001::/32")
+)
+
+
 def _is_public(address: str) -> bool:
     ip = ipaddress.ip_address(address)  # scoped IPv6 addresses ("fe80::1%eth0", as getaddrinfo reports them) parse too
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped  # an IPv4 address written as IPv6 is judged as the IPv4 address
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped  # an IPv4 address written as IPv6 is judged as the IPv4 address
+        elif any(ip in network for network in _TRANSLATION_NETWORKS):
+            return False
     return ip.is_global and not ip.is_multicast
 
 

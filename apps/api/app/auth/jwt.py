@@ -3,8 +3,13 @@
 Passwords are hashed with bcrypt (the existing `$2b$` hashes stay valid). bcrypt only looks at the first 72 bytes, so longer passwords are refused rather than
 silently truncated. Tokens are signed with the configured HMAC algorithm; the algorithm is fixed on decode (never read from the token), and a token must say what
 it is for: an access token cannot be used where a refresh token is expected, or the other way round.
+
+A user's tokens also carry a tag of the password they were issued under (`pwv`, see `password_version`), so that changing the password ends every session that
+was open under the old one: the tokens themselves are stateless and would otherwise stay valid until they expire.
 """
 
+import hashlib
+import hmac
 import uuid
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
@@ -19,6 +24,7 @@ from app.config import get_settings
 ACCESS = "access"
 REFRESH = "refresh"
 RESERVED_CLAIMS = frozenset({"sub", "iat", "exp", "type"})
+PASSWORD_VERSION_CLAIM = "pwv"
 MAX_PASSWORD_BYTES = 72  # bcrypt ignores everything after this
 
 TokenError = InvalidTokenError
@@ -61,8 +67,18 @@ def create_access_token(subject: str, extra: dict[str, Any] | None = None) -> st
     return issue_token(subject, ACCESS, timedelta(minutes=get_settings().jwt_access_token_expire_minutes), extra)
 
 
-def create_refresh_token(subject: str) -> str:
-    return issue_token(subject, REFRESH, timedelta(days=get_settings().jwt_refresh_token_expire_days), None)
+def create_refresh_token(subject: str, extra: dict[str, Any] | None = None) -> str:
+    return issue_token(subject, REFRESH, timedelta(days=get_settings().jwt_refresh_token_expire_days), extra)
+
+
+def password_version(hashed_password: str) -> str:
+    """A tag that changes when the stored password hash does: an HMAC of the hash under the signing key, so the tag reveals nothing about the hash."""
+    digest = hmac.new(get_settings().jwt_secret_key.encode(), hashed_password.encode(), hashlib.sha256)
+    return digest.hexdigest()[:32]
+
+
+def password_version_matches(tag: str, hashed_password: str) -> bool:
+    return hmac.compare_digest(tag.encode(), password_version(hashed_password).encode())
 
 
 def decode_token(token: str, expected_type: str = ACCESS) -> dict[str, Any]:
@@ -79,11 +95,16 @@ def decode_token(token: str, expected_type: str = ACCESS) -> dict[str, Any]:
     return claims
 
 
-def user_id_from_token(token: str, expected_type: str) -> str:
-    """The id of the user a token was issued to. Ids are UUIDs: any other subject cannot be a user, and would reach the database as a malformed value (a 500)."""
-    subject = decode_token(token, expected_type)["sub"]
+def subject_from_token(token: str, expected_type: str) -> tuple[str, str]:
+    """The id of the user a token was issued to, and the password version it carries. Ids are UUIDs: any other subject cannot be a user, and would reach the
+    database as a malformed value (a 500). A token without a password version (one issued before there was one) is refused."""
+    claims = decode_token(token, expected_type)
+    subject = claims["sub"]
     try:
         uuid.UUID(subject)
     except (ValueError, AttributeError, TypeError) as exc:
         raise InvalidTokenError("the subject is not a user id") from exc
-    return subject
+    version = claims.get(PASSWORD_VERSION_CLAIM)
+    if not isinstance(version, str):
+        raise InvalidTokenError("the token has no password version")
+    return subject, version

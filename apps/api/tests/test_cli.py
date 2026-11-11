@@ -195,6 +195,23 @@ class TestSetPassword:
             == 401
         )
 
+    def test_sessions_opened_before_the_change_are_ended(self, run, worker_db, make_user, client):
+        make_user(email="ada@example.com", password="the-old-password")
+        pair = client.post(
+            "/api/v1/auth/login", json={"email": "ada@example.com", "password": "the-old-password"}
+        ).json()
+        assert (
+            client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {pair['access_token']}"}).status_code
+            == 200
+        )
+        assert self.invoke(run, "--email", "ada@example.com").exit_code == 0
+        worker_db.rollback()
+        assert (
+            client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {pair['access_token']}"}).status_code
+            == 401
+        )
+        assert client.post("/api/v1/auth/refresh", json={"refresh_token": pair["refresh_token"]}).status_code == 401
+
     def test_the_email_is_matched_without_regard_to_case_or_spaces(self, run, worker_db, make_user):
         user = make_user(email="Ada@Example.com")
         assert self.invoke(run, "--email", "  ada@EXAMPLE.com ").exit_code == 0
