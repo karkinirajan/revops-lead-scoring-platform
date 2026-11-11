@@ -165,3 +165,60 @@ export interface ModelRegistryEntry {
   promoted_at: string | null;
   created_at: string;
 }
+
+// ---- Analytics ----
+export interface TierAccuracy {
+  tier: PriorityTier;
+  total_leads: number;
+  converted: number;
+  precision: number;
+  avg_score: number;
+  avg_deal_value: number | null;
+  avg_days_to_close: number | null;
+}
+
+export interface ModelAccuracy {
+  model_version: string;
+  total_scored: number;
+  total_converted: number;
+  overall_conversion_rate: number;
+  tiers: TierAccuracy[];
+  generated_at: string;
+}
+
+export interface ScoreDistribution {
+  buckets: { range: string; count: number }[];
+  total: number;
+}
+
+export interface Conversion {
+  id: string;
+  contact_id: string;
+  converted_at: string;
+  deal_value: number | null;
+  days_to_close: number | null;
+  plan_tier: string | null;
+  score_at_conversion: number | null;
+  tier_at_conversion: PriorityTier | null;
+  model_version_at_conversion: string | null;
+  source: string;
+  crm_deal_id: string | null;
+}
+
+export type ConversionList = PaginatedResponse<Conversion>;
+
+/** What the server reports about its own configuration: values that are safe to show, and for each secret only whether it is set. */
+export interface SystemConfig {
+  hubspot_access_token_set: boolean;
+  hubspot_portal_id_set: boolean;
+  hubspot_webhook_secret_set: boolean;
+  hubspot_batch_size: number;
+  hubspot_rate_limit_per_second: number;
+  anthropic_api_key_set: boolean;
+  ai_model: string;
+  ai_cache_ttl_seconds: number;
+  ai_rate_limit_per_minute: number;
+  scoring_hot_threshold: number;
+  scoring_warm_threshold: number;
+  scoring_cool_threshold: number;
+}

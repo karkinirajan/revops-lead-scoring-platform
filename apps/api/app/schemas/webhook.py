@@ -1,16 +1,17 @@
 from datetime import datetime
 
-from pydantic import HttpUrl, field_validator
+from pydantic import Field, field_validator
 
+from app.models.webhook import WebhookStatus
 from app.schemas.common import OrmBase
 
 
 class WebhookCreate(OrmBase):
-    name: str
-    url: str
-    secret: str | None = None
-    events: str = "tier_crossed"     # comma-separated: tier_crossed,hot_lead,conversion
-    tier_filter: str | None = None   # comma-separated: HOT,WARM (empty = all)
+    name: str = Field(min_length=1, max_length=255)
+    url: str = Field(max_length=2048)
+    secret: str | None = Field(default=None, min_length=16, max_length=255)  # generated when omitted
+    events: str = "tier_crossed"  # comma-separated: tier_crossed,hot_lead,conversion
+    tier_filter: str | None = None  # comma-separated: HOT,WARM (empty = all)
 
     @field_validator("events")
     @classmethod
@@ -24,12 +25,12 @@ class WebhookCreate(OrmBase):
 
 
 class WebhookUpdate(OrmBase):
-    name: str | None = None
-    url: str | None = None
-    secret: str | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    url: str | None = Field(default=None, max_length=2048)
+    secret: str | None = Field(default=None, min_length=16, max_length=255)
     events: str | None = None
     tier_filter: str | None = None
-    status: str | None = None        # active | paused | disabled
+    status: WebhookStatus | None = None
 
 
 class WebhookRead(OrmBase):
@@ -45,6 +46,12 @@ class WebhookRead(OrmBase):
     last_triggered_at: datetime | None
     created_at: datetime
     # Never expose secret in reads
+
+
+class WebhookCreated(WebhookRead):
+    """The response to creating a webhook: the only time the signing secret is shown."""
+
+    secret: str
 
 
 class WebhookDeliveryRead(OrmBase):

@@ -1,5 +1,4 @@
 import uuid
-from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -9,12 +8,11 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import AnalystRequired, ViewerRequired
 from app.config import get_settings
 from app.database import get_db
-from app.models.contact import Contact, ContactFeature
 from app.models.company import Company
+from app.models.contact import Contact
 from app.models.scoring import LeadScore, ScoringRun, ScoringRunStatus
 from app.schemas.common import PaginatedResponse
 from app.schemas.scoring import (
-    LeadScoreRead,
     RankedLeadRead,
     ScoreSimulateRequest,
     ScoreSimulateResponse,
@@ -39,8 +37,11 @@ def get_ranked_leads(
 ):
     """Return the latest score per contact, ranked highest first."""
     # Subquery: latest score per contact
+    # The latest *live* score per contact. A newer shadow score must not hide it: the shadow model scores alongside the live one, and the live rows are
+    # the ones selected below.
     latest = (
         select(LeadScore.contact_id, func.max(LeadScore.scored_at).label("max_scored_at"))
+        .where(LeadScore.is_shadow == False)  # noqa: E712
         .group_by(LeadScore.contact_id)
         .subquery()
     )
@@ -90,11 +91,11 @@ def get_ranked_leads(
         total=total or 0,
         page=page,
         page_size=page_size,
-        pages=max(1, -(-( total or 0) // page_size)),
+        pages=max(1, -(-(total or 0) // page_size)),
     )
 
 
-@router.post("/simulate", response_model=ScoreSimulateResponse)
+@router.post("/simulate", response_model=ScoreSimulateResponse, dependencies=[ViewerRequired])
 def simulate_score(body: ScoreSimulateRequest):
     """What-if scoring: compute score for an arbitrary feature vector without persisting."""
     features = FeatureVector(**body.model_dump())
@@ -108,7 +109,9 @@ def simulate_score(body: ScoreSimulateRequest):
     )
 
 
-@router.post("/runs", response_model=ScoringRunRead, status_code=status.HTTP_202_ACCEPTED, dependencies=[AnalystRequired])
+@router.post(
+    "/runs", response_model=ScoringRunRead, status_code=status.HTTP_202_ACCEPTED, dependencies=[AnalystRequired]
+)
 def trigger_scoring_run(
     body: ScoringRunCreate,
     db: Annotated[Session, Depends(get_db)],
@@ -129,6 +132,7 @@ def trigger_scoring_run(
     # Dispatch async task
     try:
         from workers.tasks.scoring import run_scoring_batch
+
         run_scoring_batch.delay(run_id=run.id, filter_segment=body.filter_segment, is_shadow=body.is_shadow)
     except Exception:
         pass  # Celery not available in all environments

@@ -4,6 +4,7 @@ Dead-letter queue reprocessor.
 Periodically scans for quarantined/failed raw events and retries them
 with controlled concurrency and rate limiting.
 """
+
 from __future__ import annotations
 
 import structlog
@@ -28,6 +29,7 @@ def reprocess_dlq(self):
     MAX_DLQ_RETRY and re-dispatch them through the ingest pipeline.
     """
     from sqlalchemy import select
+
     from app.database import SessionLocal
     from app.models.ingestion import RawEvent
     from workers.tasks.ingest import process_raw_event
@@ -77,7 +79,8 @@ def reprocess_dlq(self):
 )
 def get_dlq_stats(self) -> dict:
     """Return counts of quarantined and failed records for monitoring."""
-    from sqlalchemy import select, func
+    from sqlalchemy import func, select
+
     from app.database import SessionLocal
     from app.models.ingestion import RawEvent
 

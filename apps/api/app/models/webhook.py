@@ -1,33 +1,34 @@
 """Webhook targets and delivery audit log."""
+
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
 
 
 class WebhookEvent(StrEnum):
-    TIER_CROSSED    = "tier_crossed"       # lead moves to a new tier
-    SCORE_UPDATED   = "score_updated"      # any re-score
-    DEMO_REQUESTED  = "demo_requested"     # intent signal fires
-    HOT_LEAD        = "hot_lead"           # score enters HOT tier
-    CONVERSION      = "conversion"         # deal-won recorded
+    TIER_CROSSED = "tier_crossed"  # lead moves to a new tier
+    SCORE_UPDATED = "score_updated"  # any re-score
+    DEMO_REQUESTED = "demo_requested"  # intent signal fires
+    HOT_LEAD = "hot_lead"  # score enters HOT tier
+    CONVERSION = "conversion"  # deal-won recorded
 
 
 class WebhookStatus(StrEnum):
-    ACTIVE   = "active"
-    PAUSED   = "paused"
+    ACTIVE = "active"
+    PAUSED = "paused"
     DISABLED = "disabled"
 
 
 class WebhookDeliveryStatus(StrEnum):
-    PENDING  = "pending"
-    SUCCESS  = "success"
-    FAILED   = "failed"
+    PENDING = "pending"
+    SUCCESS = "success"
+    FAILED = "failed"
     RETRYING = "retrying"
 
 
@@ -44,7 +45,7 @@ class Webhook(Base):
     # Target
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     url: Mapped[str] = mapped_column(String(2048), nullable=False)
-    secret: Mapped[str | None] = mapped_column(String(255))    # HMAC signing secret
+    secret: Mapped[str | None] = mapped_column(String(255))  # HMAC signing secret
 
     # What events trigger this webhook (stored as comma-separated string for portability)
     events: Mapped[str] = mapped_column(String(500), nullable=False, default="tier_crossed")
@@ -61,17 +62,18 @@ class Webhook(Base):
     last_triggered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
         nullable=False,
     )
 
+    # the database deletes a webhook's delivery logs (ON DELETE CASCADE); without passive_deletes the ORM first tries to set their webhook_id to NULL
     deliveries: Mapped[list["WebhookDeliveryLog"]] = relationship(
-        "WebhookDeliveryLog", back_populates="webhook", lazy="select"
+        "WebhookDeliveryLog", back_populates="webhook", lazy="select", passive_deletes=True
     )
 
     @property
@@ -112,7 +114,7 @@ class WebhookDeliveryLog(Base):
 
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False, index=True
     )
 
     webhook: Mapped["Webhook"] = relationship("Webhook", back_populates="deliveries")

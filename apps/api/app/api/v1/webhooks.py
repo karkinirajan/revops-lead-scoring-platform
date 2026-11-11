@@ -11,7 +11,8 @@ Endpoints:
   POST   /webhooks/{id}/test             — send a test ping
   POST   /webhooks/{id}/deliveries/{did}/retry  — manually retry a delivery
 """
-from datetime import datetime, timezone
+
+import secrets
 from typing import Annotated
 
 import structlog
@@ -19,18 +20,20 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import AdminRequired, AnalystRequired, CurrentUser, ViewerRequired
+from app.auth.dependencies import AnalystRequired, CurrentUser, ViewerRequired
 from app.database import get_db
-from app.models.webhook import Webhook, WebhookDeliveryLog, WebhookStatus
+from app.models.webhook import Webhook, WebhookDeliveryLog
 from app.schemas.common import PaginatedResponse
 from app.schemas.webhook import (
     WebhookCreate,
+    WebhookCreated,
     WebhookDeliveryRead,
     WebhookRead,
     WebhookTestRequest,
     WebhookUpdate,
 )
-from app.services.webhook_service import build_payload, dispatch_event, retry_failed_delivery
+from app.security.urls import UnsafeUrlError, ensure_public_url
+from app.services.webhook_service import retry_failed_delivery, send_test_delivery
 
 router = APIRouter()
 logger = structlog.get_logger(__name__)
@@ -41,7 +44,17 @@ def list_webhooks(db: Annotated[Session, Depends(get_db)]):
     return db.scalars(select(Webhook).order_by(Webhook.created_at.desc())).all()
 
 
-@router.post("", response_model=WebhookRead, status_code=status.HTTP_201_CREATED)
+def _checked_url(url: str) -> str:
+    """A webhook target must be a public http(s) address: the server will call it."""
+    try:
+        return ensure_public_url(url)
+    except UnsafeUrlError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"Invalid webhook URL: {exc}"
+        ) from None
+
+
+@router.post("", response_model=WebhookCreated, status_code=status.HTTP_201_CREATED, dependencies=[AnalystRequired])
 def create_webhook(
     body: WebhookCreate,
     db: Annotated[Session, Depends(get_db)],
@@ -49,8 +62,8 @@ def create_webhook(
 ):
     hook = Webhook(
         name=body.name,
-        url=body.url,
-        secret=body.secret,
+        url=_checked_url(body.url),
+        secret=body.secret or secrets.token_urlsafe(32),
         events=body.events,
         tier_filter=body.tier_filter,
         created_by=current_user.id,
@@ -58,7 +71,7 @@ def create_webhook(
     db.add(hook)
     db.commit()
     db.refresh(hook)
-    logger.info("webhook_created", id=hook.id, url=hook.url, events=hook.events)
+    logger.info("webhook_created", id=hook.id, events=hook.events)
     return hook
 
 
@@ -70,7 +83,7 @@ def get_webhook(webhook_id: str, db: Annotated[Session, Depends(get_db)]):
     return hook
 
 
-@router.patch("/{webhook_id}", response_model=WebhookRead)
+@router.patch("/{webhook_id}", response_model=WebhookRead, dependencies=[AnalystRequired])
 def update_webhook(
     webhook_id: str,
     body: WebhookUpdate,
@@ -81,7 +94,12 @@ def update_webhook(
     if not hook:
         raise HTTPException(status_code=404, detail="Webhook not found")
 
-    for field, value in body.model_dump(exclude_unset=True).items():
+    changes = body.model_dump(exclude_unset=True)
+    if changes.get("url") is not None:
+        changes["url"] = _checked_url(changes["url"])
+    for field, value in changes.items():
+        if value is None and field in ("name", "url", "status"):  # these cannot be cleared
+            continue
         setattr(hook, field, value)
     db.commit()
     db.refresh(hook)
@@ -97,8 +115,9 @@ def delete_webhook(webhook_id: str, db: Annotated[Session, Depends(get_db)]):
     db.commit()
 
 
-@router.get("/{webhook_id}/deliveries", response_model=PaginatedResponse[WebhookDeliveryRead],
-            dependencies=[ViewerRequired])
+@router.get(
+    "/{webhook_id}/deliveries", response_model=PaginatedResponse[WebhookDeliveryRead], dependencies=[ViewerRequired]
+)
 def list_deliveries(
     webhook_id: str,
     db: Annotated[Session, Depends(get_db)],
@@ -111,9 +130,12 @@ def list_deliveries(
         raise HTTPException(status_code=404, detail="Webhook not found")
 
     from sqlalchemy import func
-    q = select(WebhookDeliveryLog).where(
-        WebhookDeliveryLog.webhook_id == webhook_id
-    ).order_by(WebhookDeliveryLog.created_at.desc())
+
+    q = (
+        select(WebhookDeliveryLog)
+        .where(WebhookDeliveryLog.webhook_id == webhook_id)
+        .order_by(WebhookDeliveryLog.created_at.desc())
+    )
 
     if status_filter:
         q = q.where(WebhookDeliveryLog.status == status_filter)
@@ -129,30 +151,36 @@ def list_deliveries(
     )
 
 
-@router.post("/{webhook_id}/test", status_code=status.HTTP_200_OK)
+@router.post("/{webhook_id}/test", status_code=status.HTTP_200_OK, dependencies=[AnalystRequired])
 def test_webhook(
     webhook_id: str,
     body: WebhookTestRequest,
     db: Annotated[Session, Depends(get_db)],
     current_user: CurrentUser,
 ):
-    """Send a test ping to the webhook endpoint."""
+    """Send a test ping to this webhook (and only this one), whatever events it subscribes to."""
     hook = db.get(Webhook, webhook_id)
     if not hook:
         raise HTTPException(status_code=404, detail="Webhook not found")
 
-    count = dispatch_event(
-        db=db,
+    delivery = send_test_delivery(
+        db,
+        hook,
         event_type=body.event_type,
         contact_id=body.contact_id,
         data={"test": True, "triggered_by": current_user.email},
-        async_mode=False,  # deliver synchronously for test
     )
-    return {"status": "sent", "delivered_to": count}
+    return {
+        "status": "sent",
+        "delivered_to": 1 if delivery.status == "success" else 0,
+        "delivery_id": delivery.id,
+        "delivery_status": delivery.status,
+    }
 
 
-@router.post("/{webhook_id}/deliveries/{delivery_id}/retry", status_code=status.HTTP_200_OK,
-             dependencies=[AnalystRequired])
+@router.post(
+    "/{webhook_id}/deliveries/{delivery_id}/retry", status_code=status.HTTP_200_OK, dependencies=[AnalystRequired]
+)
 def retry_delivery(
     webhook_id: str,
     delivery_id: str,

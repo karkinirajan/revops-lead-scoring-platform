@@ -7,12 +7,13 @@ Supports:
   - Configurable field mapping
   - Schema validation and quarantine
 """
+
 from __future__ import annotations
 
 import csv
 import io
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -120,7 +121,9 @@ class S3CSVConnector(BaseConnector):
 
     def _s3_client(self):
         import boto3
+
         from app.config import get_settings
+
         s = get_settings()
         kwargs: dict[str, Any] = {}
         if s.s3_endpoint_url:
@@ -168,7 +171,7 @@ class S3CSVConnector(BaseConnector):
         )
 
     def _extract_watermark(self, records: list[dict]) -> str | None:
-        timestamps = [r.get("_last_modified") for r in records if r.get("_last_modified")]
+        timestamps: list[str] = [r["_last_modified"] for r in records if r.get("_last_modified")]
         return max(timestamps) if timestamps else None
 
 

@@ -2,7 +2,7 @@ from collections.abc import Generator
 from typing import Any
 
 from sqlalchemy import create_engine, event, text
-from sqlalchemy.orm import DeclarativeBase, MappedColumn, Session, mapped_column, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import QueuePool
 
 from app.config import get_settings

@@ -2,10 +2,9 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError
 from sqlalchemy.orm import Session
 
-from app.auth.jwt import decode_token
+from app.auth.jwt import ACCESS, TokenError, user_id_from_token
 from app.database import get_db
 from app.models.user import User, UserRole
 
@@ -28,12 +27,9 @@ def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        payload = decode_token(token)
-        user_id: str = payload.get("sub", "")
-        if not user_id:
-            raise credentials_exception
-    except JWTError:
-        raise credentials_exception
+        user_id = user_id_from_token(token, ACCESS)
+    except TokenError:
+        raise credentials_exception from None
 
     user = db.get(User, user_id)
     if user is None or not user.is_active:

@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+import { goToLogin } from "@/lib/navigation";
+import { applyStreamLine } from "@/lib/sse";
 
 type Props = {
   contactId: string;
@@ -23,14 +23,15 @@ export function LeadIntelligencePanel({ contactId, contactName }: Props) {
     setError(null);
 
     try {
-      const token = typeof window !== "undefined" ? localStorage.getItem("token") ?? "" : "";
-      const resp = await fetch(`${API}/api/v1/contacts/${contactId}/intelligence`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const resp = await fetch(`/bff/contacts/${encodeURIComponent(contactId)}/intelligence`, { credentials: "same-origin", cache: "no-store" });
 
+      if (resp.status === 401) {
+        goToLogin();
+        return;
+      }
       if (!resp.ok) {
         const d = await resp.json().catch(() => ({}));
-        setError(d.detail ?? "Intelligence unavailable");
+        setError(typeof d.detail === "string" ? d.detail : "Intelligence unavailable");
         setStreaming(false);
         return;
       }
@@ -52,25 +53,19 @@ export function LeadIntelligencePanel({ contactId, contactName }: Props) {
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
 
+        let finished = false;
         for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const payload = line.slice(6).trim();
-          if (payload === "[DONE]") break;
-          try {
-            const parsed = JSON.parse(payload);
-            if (parsed.error) {
-              setError(parsed.error);
-              break;
-            }
-            if (parsed.chunk) {
-              setText((prev) => prev + parsed.chunk.replace(/\\n/g, "\n"));
-            }
-          } catch {
-            // ignore parse errors on partial chunks
+          const event = applyStreamLine(line);
+          if (event.kind === "chunk") setText((prev) => prev + event.text);
+          else if (event.kind === "error") setError(event.message);
+          if (event.kind === "done" || event.kind === "error") {
+            finished = true;
+            break;
           }
         }
+        if (finished) break;
       }
-    } catch (e) {
+    } catch {
       setError("Failed to connect to AI service");
     } finally {
       setStreaming(false);
@@ -82,7 +77,7 @@ export function LeadIntelligencePanel({ contactId, contactName }: Props) {
       <button
         onClick={loadIntelligence}
         className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md font-medium transition-opacity hover:opacity-80"
-        style={{ background: "rgba(99,102,241,0.15)", color: "var(--primary)" }}
+        style={{ background: "rgba(99,102,241,0.15)", color: "var(--primary-fg)" }}
         title="Generate AI intelligence report"
       >
         <SparkleIcon />
@@ -102,17 +97,18 @@ export function LeadIntelligencePanel({ contactId, contactName }: Props) {
       >
         <div className="flex items-center gap-2">
           <SparkleIcon />
-          <span className="text-xs font-semibold" style={{ color: "var(--primary)" }}>
+          <span className="text-xs font-semibold" style={{ color: "var(--primary-fg)" }}>
             AI Intelligence — {contactName}
           </span>
           {streaming && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "rgba(99,102,241,0.1)", color: "var(--primary)" }}>
+            <span className="text-[10px] px-1.5 py-0.5 rounded-sm" style={{ background: "rgba(99,102,241,0.1)", color: "var(--primary-fg)" }}>
               generating…
             </span>
           )}
         </div>
         <button
           onClick={() => setOpen(false)}
+          aria-label="Close AI intelligence"
           className="text-xs"
           style={{ color: "var(--text-faint)" }}
         >

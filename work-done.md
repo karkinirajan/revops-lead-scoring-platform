@@ -1,0 +1,65 @@
+# Work done: modernisation of revops-lead-scoring-platform
+
+Branch `chore/modernize`. Nothing was pushed.
+
+## What was wrong, and what changed
+
+Security and data-integrity defects first, then the ones that made features not work.
+
+| # | Finding | Fix |
+|---|---|---|
+| 1 | **The HubSpot deal-won webhook could be called by anyone.** The signature was checked only `if webhook_secret and x_hubspot_signature`: with no secret configured, or with the header simply left out, the check was skipped and the request created conversions. | The v3 signature (method, public URL, body and timestamp, HMAC-SHA256, constant-time compare, five-minute window) is required, and without `HUBSPOT_WEBHOOK_SECRET` the endpoint answers 503. `PUBLIC_API_URL` covers the URL behind a proxy. |
+| 2 | **Webhook targets were not checked, so a user could make the server call anything it can reach** (cloud metadata, Postgres, Redis). `url` was a plain string. | `app/security/urls.py`: https, no credentials, public addresses only (resolved and checked, re-checked at delivery, mapped IPv6 judged as IPv4), redirects never followed. Salesforce instance URLs must also be on `SALESFORCE_ALLOWED_DOMAINS`, since they receive the stored token. |
+| 3 | **Machine-learning models were loaded with `pickle.load`**, so anyone who could write a model file could run code in the API. | Models are XGBoost JSON. |
+| 4 | **CRM access and refresh tokens were stored in plain text** (the model's own comment said "should be encrypted at rest"). | Fernet encryption under `APP_SECRET_KEY` (`enc:v1:`), old plain values still read and re-encrypted on save. |
+| 5 | **Tokens were not checked for what they are.** They carried a `type` claim that nothing read, so a 7-day refresh token was accepted as an access token on every endpoint; extra claims were merged in after `sub`, `exp` and `type` and could overwrite them; no claim was required. The libraries were `python-jose` (no release between June 2021 and February 2025) and `passlib` (last release October 2020). A token whose subject was not a user id (an empty string, say) made the database reject the lookup and the API answer 500. | PyJWT and bcrypt. Algorithm fixed on decode; `exp`, `iat`, `sub`, `type` required; a token must be the right kind; reserved claims cannot be set; the subject must be a UUID (anything else is a 401, on the access and the refresh path); passwords over bcrypt's 72 bytes are refused instead of truncated; an unknown email costs the same time as a wrong password. |
+| 6 | **Placeholder secrets were accepted in production.** | Outside development the API refuses to start with a placeholder, a secret under 32 characters, or `CORS_ORIGINS=*`. |
+| 7 | **The web app could not work against the API.** There was no sign-in page; the token was meant to live in `localStorage`; server-rendered pages called the API with no `Authorization` header (and `revalidate: 60`, which would have shared one user's data with the next). | A cookie session: `/session/login`, httpOnly SameSite=Lax cookies, a same-origin proxy (`/bff`) with an allow-list of API paths, an `Origin` check on changes, token refresh in `proxy.ts`. Next 15.1 to 16.4, Tailwind 3 to 4. |
+| 8 | **Webhooks never fired.** `dispatch_event` existed but nothing called it: not the scoring task, not conversions (its one caller was the test ping). Separately, it queued each delivery before committing the delivery row, so a fast worker could look the row up, find nothing and drop the event. | Live scoring (the scheduled task and `make score`) fires `tier_crossed`, `hot_lead`, `score_updated` and `demo_requested`, conversions fire `conversion`, and the delivery rows are committed before they are queued. A contact's first score is a baseline and fires nothing (otherwise the first pass would announce every existing HOT lead); shadow scores never fire. Events are at-most-once (see "Not verified"). The README's signature example is run against a real delivery by a test. |
+| 9 | **The per-address rate limits could be dodged, and then starved real use.** nginx appended to `X-Forwarded-For`, and uvicorn trusts the first entry, so a client could pick its own address. Separately, one full load of a page makes 27 requests (measured), against a limit of 60 a minute with a burst of 30. | nginx overwrites the header with the connecting address (tested with spoofed headers through a real nginx), and the web app, which forwards the address to the API, takes the last entry (so it fails closed if the header were ever appended to; an automated review of the code asked for this). Static files are exempt, the page limit is 120 a minute with a burst of 60 (sized from the measurement), and the answer is 429 instead of 503. |
+| 10 | **A newer shadow score made a lead disappear from the list.** The "latest score per contact" subquery did not exclude shadow rows, and the outer query then filtered the shadow row out. | The subquery considers only live scores. |
+| 11 | **Models and migrations disagreed.** Four boolean columns were declared as integers; indexes the models declare were never created; `webhook_delivery_logs` had no foreign key, so deleting a webhook through the ORM failed with a 500. | Models corrected, migration 003 added, and `tests/test_schema.py` fails if they drift again. |
+| 12 | **Request logging was misconfigured** (`add_logger_name` with a `PrintLogger`), which failed every request once exercised. | Fixed, and a test covers a request. |
+| 13 | **The Settings page described a deployment that did not exist.** Every row was fixed text: "API Key: Configured via ANTHROPIC_API_KEY" next to a server where it was not set, a model name from before this work, a "Sunday 2am" retrain that is really "every 7 days". | `GET /system/config` reports the real values and only whether each secret is set; the page shows them. |
+| 14 | **The tier thresholds existed twice.** The ML engine read `SCORING_*_THRESHOLD`; the formula used a hard-coded copy, so changing the setting changed one engine only. | One function (`tier_for`) reads the settings; both engines use it, and the Settings page shows them. Two settings nothing read were removed. |
+| 14a | **The company's size never reached the scoring.** The formula weighs it (enterprise 1.15, mid-market 1.05, SMB 0.95) and the simulator passed it, but the scoring task and the command line built their input without it, so every real score used "unknown". The model was *trained* with each contact's real size (one-hot), so it was also served a feature it had never seen at that value. | The input is built from the contact, including its company's size, in one place. **Scores will move at the next scoring run: SMB contacts down 5%, mid-market up 5%, enterprise up 15% (all capped at 100), and some will change tier, which fires `tier_crossed`.** A model trained before this change was trained on the real sizes, so it is now served what it learned from. |
+| 14b | **The scoring existed three times** (the task, the command line, and the simulator's own path), and the command line's copy did not keep the signals a later score is compared with. | The feature mapping, the previous-score lookup and the stored row are one module (`services/lead_scoring.py`) that the task and the command line share. |
+| 15 | **There was no way to change a password**, and `seed` never updates an existing admin. | `make set-password EMAIL=...`. |
+| 16 | **Defects found only by running the interface in a browser** (the tests could not see them): secondary text at 2.2:1 contrast, white-on-indigo buttons at 4.47:1, red tier text at 3 to 3.9:1; the Score Distribution chart drew no bars (percentage heights inside an auto-height parent); a "View all HOT leads" link that showed all leads with the HOT filter looking unselected; form controls on Simulate not labelled; unchecked switches losing their focus ring; a fixed side navigation that left 166 pixels for content on a phone. | Fixed (tokens, chart, filters read from the URL and validated, labels, switch, a menu button below tablet width), with tests where the behaviour is testable and `apps/web/test/browser/audit.js` for what is not. |
+| 17 | **Smaller:** `make api-dev` could not import `workers`; the old README's webhook example used the wrong header and payload shape; CSV exports could run formulas in a spreadsheet; AI prompts treated CRM text as instructions; a webhook target with surrounding spaces was validated stripped but stored as typed. | Each fixed and tested. |
+
+Deduplication and structure: one `uv` workspace and one `uv.lock` for the API and workers; Dockerfiles built from the repository root; production compose with internal, egress and frontend networks; the web app's `lib/` split into auth, server and helpers; docs as a four-chapter guide (`docs/`) instead of a 615-line README; `make` targets for everything; CI for Python 3.12 and 3.14, Node 24 and 26, and the three images.
+
+## Gates
+
+| Gate | Result |
+|---|---|
+| `uv run ruff check .` and `ruff format --check .` | pass (`All checks passed!`; 114 files formatted, Markdown included) |
+| `uv run mypy apps/api/app workers` | pass (72 source files) |
+| `pytest apps/api/tests` | 788 passed on Python 3.14.9 and on 3.12.16 |
+| `npm run lint`, `type-check`, `test`, `build` in `apps/web` | all pass; 473 tests; production build compiles all 14 routes |
+| Mutation check, API (`make mutation-api`) | 229 of 229 killed in one run |
+| Mutation check, web (`make mutation-web`) | 289 of 289 killed in one run |
+| `uv audit` / `npm audit --omit=dev` | no known vulnerabilities in 99 Python packages; 0 in the production npm dependencies |
+| Secret scan of tracked and new files (`.env*` excluded; locations only, never values) | 221 files scanned, 10 hits, all placeholders, documentation examples or test constants; 0 real secrets. Only `.env.example` is tracked; `.env` is ignored |
+| The three production Docker images (`docker build --target production`) | build; API and worker imports and the web server's responses checked inside the containers |
+| Browser checks of a production build (not automated) | contrast 0 failures on 8 pages; no unintended overflow at 1280, 768 and 390 px; focus indicator on every tab stop checked; details in `docs/guide/04-testing.md` |
+
+## Not verified
+
+* **No live HubSpot, Salesforce or Anthropic call was made.** Their clients, signatures and response shapes are tested against fakes, and the network is closed to the tests. The AI stream was checked end to end only as far as "not configured" (no key was set); real streamed output was not seen.
+* **No load test.** The nginx limits come from one measured page load, not from traffic. The XForwarded-For and limit behaviour was tested with a real nginx and test backends on high ports, not with the production compose.
+* **The production compose stack and the CI workflow were not run.** The three production images were built and smoke-tested (the API and worker import cleanly in their containers as a non-root user, and the web image serves `/login` and redirects a signed-out visitor), but PostgreSQL, Redis, nginx and the services were never started together, and CI has never run on this branch.
+* **TypeScript 7** (latest) was not tried; the project is on 6.0.
+* **Webhook events are at-most-once.** A worker that dies between saving a score and queuing its events loses them; two overlapping scoring runs for one contact can both fire. Not a problem for notifications that tolerate that; not suitable as an audit log.
+* **No password-change or user-deactivation endpoint exists.** `set-password` covers the first from the command line; deactivating a user still needs the database. Existing tokens stay valid until they expire (rotate `JWT_SECRET_KEY` to end every session).
+* **Not penetration-tested.** See the last section of `docs/guide/02-security-model.md`.
+* `.env.example` was written without being read back (by policy for `.env*` files), so it may not list every variable; `docs/guide/03-running-and-operating.md` does.
+
+## Left for you (needs a human)
+
+* **Push:** `git push -u origin chore/modernize` (not run).
+* **Rotate anything that was ever real.** The original repository had placeholder secrets and sample values only, and none were found in the tracked files, but the git history was not audited for secrets.
+* Decide on a **licence**: none is included.
+* Set `HUBSPOT_WEBHOOK_SECRET` and `PUBLIC_API_URL` before pointing HubSpot at the webhook; until then it answers 503.
+* If you put a CDN or load balancer in front of nginx, configure `real_ip_header` first (see chapter 3).

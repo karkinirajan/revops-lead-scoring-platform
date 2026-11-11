@@ -1,0 +1,21 @@
+# Docker builds use the repository root as the context, so keep out everything an image does not need (and anything secret).
+.git
+.github
+.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+**/node_modules
+**/.next
+apps/web/out
+apps/web/coverage
+data/raw
+data/processed
+data/models
+.env
+.env.*
+!.env.example
+docs
+*.md
+!apps/api/README.md

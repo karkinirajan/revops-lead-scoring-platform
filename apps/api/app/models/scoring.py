@@ -1,12 +1,16 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+
+if TYPE_CHECKING:
+    from app.models.contact import Contact
 
 
 class PriorityTier(StrEnum):
@@ -50,11 +54,11 @@ class LeadScore(Base):
     recommended_action: Mapped[str | None] = mapped_column(String(100))
 
     # Shadow mode — set True for side-by-side model comparison runs
-    is_shadow: Mapped[bool] = mapped_column(Integer, default=False, nullable=False)
+    is_shadow: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     # Timestamps
     scored_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False, index=True
     )
     feature_freshness_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -62,7 +66,7 @@ class LeadScore(Base):
     synced_to_hubspot_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     # Relationships
-    contact: Mapped["Contact"] = relationship("Contact", back_populates="scores")  # noqa: F821
+    contact: Mapped["Contact"] = relationship("Contact", back_populates="scores")
     scoring_run: Mapped["ScoringRun | None"] = relationship("ScoringRun", back_populates="scores")
 
 
@@ -77,7 +81,7 @@ class ScoringRun(Base):
 
     # Run parameters
     filter_segment: Mapped[str | None] = mapped_column(String(50))  # all | smb | mid_market | enterprise
-    is_shadow: Mapped[bool] = mapped_column(Integer, default=False, nullable=False)
+    is_shadow: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     triggered_by: Mapped[str | None] = mapped_column(String(100))  # user_id or "scheduler"
 
     # Metrics
@@ -87,7 +91,7 @@ class ScoringRun(Base):
 
     # Timing
     started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     duration_seconds: Mapped[float | None] = mapped_column(Float)

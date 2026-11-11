@@ -6,64 +6,51 @@ build-backend = "hatchling.build"
 name = "revops-api"
 version = "0.1.0"
 description = "RevOps Lead Scoring Platform — FastAPI backend"
-requires-python = ">=3.11"
+readme = "README.md"
+requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.32.0",
-    "gunicorn>=23.0.0",
-    "sqlalchemy>=2.0.36",
-    "alembic>=1.14.0",
-    "psycopg2-binary>=2.9.10",
-    "pydantic>=2.10.0",
-    "pydantic-settings>=2.6.0",
-    "python-jose[cryptography]>=3.3.0",
-    "passlib[bcrypt]>=1.7.4",
-    "redis>=5.2.0",
-    "celery>=5.4.0",
-    "httpx>=0.28.0",
-    "structlog>=24.4.0",
-    "slowapi>=0.1.9",
-    "python-multipart>=0.0.20",
-    "boto3>=1.35.0",
-    "typer[all]>=0.15.0",
-    "rich>=13.9.0",
-    "python-dotenv>=1.0.0",
-    "orjson>=3.10.0",
+    "fastapi",
+    "uvicorn[standard]",
+    "sqlalchemy",
+    "alembic",
+    "psycopg2-binary",
+    "pydantic[email]",
+    "pydantic-settings",
+    "pyjwt",
+    "bcrypt",
+    "redis",
+    "celery",
+    "httpx",
+    "structlog",
+    "slowapi",
+    "typer",
+    "rich",
+    "anthropic",
+    "cryptography",
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=8.3.0",
-    "pytest-asyncio>=0.24.0",
-    "pytest-cov>=6.0.0",
-    "httpx>=0.28.0",
-    "ruff>=0.8.0",
-    "mypy>=1.13.0",
-    "factory-boy>=3.3.0",
-    "faker>=33.0.0",
-]
+# The v2 machine-learning model: training (workers/training) and serving (app/services/ml_scoring_engine.py).
+ml = ["xgboost", "scikit-learn", "numpy"]
 
 [project.scripts]
 revops = "app.cli:app"
 
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "ruff",
+    "mypy",
+    "faker",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
-
-[tool.ruff]
-line-length = 120
-target-version = "py311"
-
-[tool.ruff.lint]
-select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
-ignore = ["B008", "E501"]
-
-[tool.mypy]
-python_version = "3.11"
-strict = false
-ignore_missing_imports = true
-plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-addopts = "-v --tb=short"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra"

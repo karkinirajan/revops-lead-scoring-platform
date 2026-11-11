@@ -1,10 +1,38 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { ApiError, fetchApi } from "@/lib/api";
+import { describeDuration } from "@/lib/format";
+import type { SystemConfig } from "@/lib/types";
 
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+type Notice = { kind: "ok" | "error"; text: string };
+
+function NoticeBar({ notice }: { notice: Notice | null }) {
+  if (!notice) return null;
+  const ok = notice.kind === "ok";
+  return (
+    <div
+      role={ok ? "status" : "alert"}
+      className="mb-4 px-3 py-2 rounded-sm text-xs"
+      style={{ background: ok ? "rgba(34,197,94,0.1)" : "rgba(239,68,68,0.1)", color: ok ? "var(--green)" : "var(--red)" }}
+    >
+      {notice.text}
+    </div>
+  );
+}
+
+const messageOf = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
 type Tab = "general" | "webhooks" | "models";
+
+type RegisteredModel = {
+  id: string;
+  version: string;
+  stage: "training" | "shadow" | "champion" | "archived" | string;
+  roc_auc: number | null;
+  precision_hot: number | null;
+  training_rows: number | null;
+};
 
 type Webhook = {
   id: string;
@@ -24,7 +52,7 @@ export default function SettingsPage() {
   const [tab, setTab] = useState<Tab>("general");
 
   return (
-    <div className="p-8 max-w-3xl mx-auto">
+    <div className="p-4 sm:p-8 max-w-3xl mx-auto">
       <div className="mb-6">
         <h1 className="text-2xl font-bold" style={{ color: "var(--text)" }}>
           Settings
@@ -58,31 +86,55 @@ export default function SettingsPage() {
   );
 }
 
+function secretRow(label: string, isSet: boolean, variable: string) {
+  return <SettingsRow key={label} label={label} value={isSet ? "Set" : `Not set — configure ${variable}`} warn={!isSet} />;
+}
+
 function GeneralTab() {
+  const [config, setConfig] = useState<SystemConfig | null>(null);
+  const [notice, setNotice] = useState<Notice | null>(null);
+
+  useEffect(() => {
+    fetchApi<SystemConfig>("/system/config")
+      .then(setConfig)
+      .catch((e: unknown) => setNotice({ kind: "error", text: messageOf(e, "Could not load the configuration") }));
+  }, []);
+
   return (
     <div className="space-y-4">
-      <SettingsSection title="HubSpot Integration">
-        <SettingsRow label="Access Token" value="Configured via HUBSPOT_ACCESS_TOKEN" secret />
-        <SettingsRow label="Portal ID" value="Configured via HUBSPOT_PORTAL_ID" secret />
-        <SettingsRow label="Batch Size" value="100 contacts per API call" />
-        <SettingsRow label="Rate Limit" value="10 req/s" />
-        <SettingsRow label="Webhook Secret" value="Configured via HUBSPOT_WEBHOOK_SECRET" secret />
-      </SettingsSection>
+      <NoticeBar notice={notice} />
+      {!config && !notice && (
+        <p role="status" className="text-xs" style={{ color: "var(--text-muted)" }}>
+          Loading configuration…
+        </p>
+      )}
 
-      <SettingsSection title="AI Intelligence">
-        <SettingsRow label="Provider" value="Anthropic Claude (claude-sonnet-4-6)" />
-        <SettingsRow label="API Key" value="Configured via ANTHROPIC_API_KEY" secret />
-        <SettingsRow label="Cache TTL" value="6 hours (Redis)" />
-        <SettingsRow label="Rate Limit" value="10 requests/min per user" />
-      </SettingsSection>
+      {config && (
+        <>
+          <SettingsSection title="HubSpot Integration">
+            {secretRow("Access Token", config.hubspot_access_token_set, "HUBSPOT_ACCESS_TOKEN")}
+            {secretRow("Portal ID", config.hubspot_portal_id_set, "HUBSPOT_PORTAL_ID")}
+            <SettingsRow label="Batch Size" value={`${config.hubspot_batch_size} contacts per API call`} />
+            <SettingsRow label="Rate Limit" value={`${config.hubspot_rate_limit_per_second} req/s`} />
+            {secretRow("Webhook Secret", config.hubspot_webhook_secret_set, "HUBSPOT_WEBHOOK_SECRET")}
+          </SettingsSection>
 
-      <SettingsSection title="Scoring Engine">
-        <SettingsRow label="v1 Model" value="Deterministic formula (always active)" />
-        <SettingsRow label="v2 ML Model" value="XGBoost (shadow mode until promoted)" />
-        <SettingsRow label="HOT Threshold" value="≥ 75" />
-        <SettingsRow label="WARM Threshold" value="≥ 50" />
-        <SettingsRow label="COOL Threshold" value="≥ 25" />
-      </SettingsSection>
+          <SettingsSection title="AI Intelligence">
+            <SettingsRow label="Provider" value={`Anthropic Claude (${config.ai_model})`} />
+            {secretRow("API Key", config.anthropic_api_key_set, "ANTHROPIC_API_KEY")}
+            <SettingsRow label="Cache TTL" value={`${describeDuration(config.ai_cache_ttl_seconds)} (Redis)`} />
+            <SettingsRow label="Rate Limit" value={`${config.ai_rate_limit_per_minute} requests/min per user`} />
+          </SettingsSection>
+
+          <SettingsSection title="Scoring Engine">
+            <SettingsRow label="v1 Model" value="Deterministic formula (always active)" />
+            <SettingsRow label="v2 ML Model" value="XGBoost (shadow mode until promoted)" />
+            <SettingsRow label="HOT Threshold" value={`≥ ${config.scoring_hot_threshold}`} />
+            <SettingsRow label="WARM Threshold" value={`≥ ${config.scoring_warm_threshold}`} />
+            <SettingsRow label="COOL Threshold" value={`≥ ${config.scoring_cool_threshold}`} />
+          </SettingsSection>
+        </>
+      )}
 
       <SettingsSection title="Beat Schedule">
         <SettingsRow label="Feature Recompute" value="Every hour" />
@@ -90,12 +142,12 @@ function GeneralTab() {
         <SettingsRow label="Shadow ML Scoring" value="Every hour" />
         <SettingsRow label="HubSpot Sync" value="Daily" />
         <SettingsRow label="Webhook Retry Sweep" value="Every 30 minutes" />
-        <SettingsRow label="Model Retraining" value="Weekly (Sunday 2am UTC)" />
+        <SettingsRow label="Model Retraining" value="Every 7 days" />
         <SettingsRow label="DLQ Reprocessor" value="Every 30 minutes" />
       </SettingsSection>
 
       <p className="text-xs mt-4" style={{ color: "var(--text-faint)" }}>
-        All secrets configured via environment variables. See{" "}
+        Secrets are configured through environment variables and are never shown here, only whether each is set. See{" "}
         <code className="font-mono">.env.example</code> for the full reference.
       </p>
     </div>
@@ -109,82 +161,94 @@ function WebhooksTab() {
   const [form, setForm] = useState({ name: "", url: "", events: "tier_crossed", tier_filter: "" });
   const [saving, setSaving] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
-  const [testResult, setTestResult] = useState<string | null>(null);
+  const [notice, setNotice] = useState<Notice | null>(null);
+  const [newSecret, setNewSecret] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`${API}/api/v1/webhooks`, {
-      headers: { Authorization: `Bearer ${localStorage.getItem("token") ?? ""}` },
-    })
-      .then((r) => (r.ok ? r.json() : []))
+    fetchApi<Webhook[]>("/webhooks")
       .then(setWebhooks)
-      .catch(() => setWebhooks([]))
+      .catch((e: unknown) => setNotice({ kind: "error", text: messageOf(e, "Could not load webhooks") }))
       .finally(() => setLoading(false));
   }, []);
 
   async function saveWebhook() {
     setSaving(true);
-    const r = await fetch(`${API}/api/v1/webhooks`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${localStorage.getItem("token") ?? ""}`,
-      },
-      body: JSON.stringify({ ...form, tier_filter: form.tier_filter || null }),
-    });
-    if (r.ok) {
-      const wh = await r.json();
-      setWebhooks((prev) => [wh, ...prev]);
+    setNotice(null);
+    try {
+      const created = await fetchApi<Webhook & { secret: string }>("/webhooks", {
+        method: "POST",
+        body: JSON.stringify({ ...form, tier_filter: form.tier_filter || null }),
+      });
+      const { secret, ...webhook } = created;
+      setWebhooks((prev) => [webhook, ...prev]);
+      setNewSecret(secret); // the API shows the signing secret once, here
       setShowForm(false);
       setForm({ name: "", url: "", events: "tier_crossed", tier_filter: "" });
+    } catch (e) {
+      setNotice({ kind: "error", text: messageOf(e, "Could not save the webhook") });
+    } finally {
+      setSaving(false);
     }
-    setSaving(false);
   }
 
   async function deleteWebhook(id: string) {
-    await fetch(`${API}/api/v1/webhooks/${id}`, {
-      method: "DELETE",
-      headers: { Authorization: `Bearer ${localStorage.getItem("token") ?? ""}` },
-    });
-    setWebhooks((prev) => prev.filter((w) => w.id !== id));
+    setNotice(null);
+    try {
+      await fetchApi<void>(`/webhooks/${encodeURIComponent(id)}`, { method: "DELETE" });
+      setWebhooks((prev) => prev.filter((w) => w.id !== id));
+    } catch (e) {
+      setNotice({ kind: "error", text: messageOf(e, "Could not delete the webhook") });
+    }
   }
 
   async function testWebhook(id: string) {
     setTestingId(id);
-    setTestResult(null);
-    const r = await fetch(`${API}/api/v1/webhooks/${id}/test`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${localStorage.getItem("token") ?? ""}`,
-      },
-      body: JSON.stringify({ event_type: "tier_crossed" }),
-    });
-    const d = await r.json();
-    setTestResult(r.ok ? "Test ping sent successfully" : d.detail ?? "Test failed");
-    setTestingId(null);
+    setNotice(null);
+    try {
+      const result = await fetchApi<{ delivered_to: number; delivery_status: string }>(`/webhooks/${encodeURIComponent(id)}/test`, {
+        method: "POST",
+        body: JSON.stringify({ event_type: "tier_crossed" }),
+      });
+      setNotice(
+        result.delivered_to > 0
+          ? { kind: "ok", text: "Test ping delivered" }
+          : { kind: "error", text: "The test ping was not delivered. See the delivery log for the reason." },
+      );
+    } catch (e) {
+      setNotice({ kind: "error", text: messageOf(e, "Test failed") });
+    } finally {
+      setTestingId(null);
+    }
   }
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
         <p className="text-sm" style={{ color: "var(--text-muted)" }}>
           Fire HTTP POST events when leads cross tier thresholds
         </p>
         <button
           onClick={() => setShowForm(!showForm)}
           className="text-xs px-3 py-1.5 rounded-md font-medium"
-          style={{ background: "var(--primary)", color: "#fff" }}
+          style={{ background: "var(--primary-strong)", color: "#fff" }}
         >
           + Add Webhook
         </button>
       </div>
 
-      {testResult && (
-        <div
-          className="mb-4 px-3 py-2 rounded text-xs"
-          style={{ background: "rgba(34,197,94,0.1)", color: "var(--green)" }}
-        >
-          {testResult}
+      <NoticeBar notice={notice} />
+
+      {newSecret && (
+        <div className="mb-4 rounded-sm border p-3 text-xs" style={{ borderColor: "var(--border)", background: "var(--surface-raised)" }}>
+          <p className="font-medium mb-1" style={{ color: "var(--text)" }}>
+            Signing secret — shown once, copy it now
+          </p>
+          <code className="block break-all font-mono" style={{ color: "var(--text-muted)" }}>
+            {newSecret}
+          </code>
+          <button className="mt-2 underline" style={{ color: "var(--primary-fg)" }} onClick={() => setNewSecret(null)}>
+            I have copied it
+          </button>
         </div>
       )}
 
@@ -270,7 +334,7 @@ function WebhooksTab() {
               onClick={saveWebhook}
               disabled={saving || !form.name || !form.url}
               className="text-xs px-4 py-1.5 rounded-md font-medium disabled:opacity-40"
-              style={{ background: "var(--primary)", color: "#fff" }}
+              style={{ background: "var(--primary-strong)", color: "#fff" }}
             >
               {saving ? "Saving…" : "Save Webhook"}
             </button>
@@ -366,29 +430,25 @@ function WebhooksTab() {
 }
 
 function ModelsTab() {
-  const [models, setModels] = useState<any[]>([]);
+  const [models, setModels] = useState<RegisteredModel[]>([]);
   const [loading, setLoading] = useState(true);
+  const [notice, setNotice] = useState<Notice | null>(null);
 
   useEffect(() => {
-    fetch(`${API}/api/v1/models`, {
-      headers: { Authorization: `Bearer ${localStorage.getItem("token") ?? ""}` },
-    })
-      .then((r) => (r.ok ? r.json() : []))
+    fetchApi<RegisteredModel[]>("/models")
       .then(setModels)
-      .catch(() => setModels([]))
+      .catch((e: unknown) => setNotice({ kind: "error", text: messageOf(e, "Could not load the model registry") }))
       .finally(() => setLoading(false));
   }, []);
 
   async function promoteModel(id: string) {
-    await fetch(`${API}/api/v1/models/${id}/promote`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${localStorage.getItem("token") ?? ""}` },
-    });
-    // Refresh
-    const r = await fetch(`${API}/api/v1/models`, {
-      headers: { Authorization: `Bearer ${localStorage.getItem("token") ?? ""}` },
-    });
-    if (r.ok) setModels(await r.json());
+    setNotice(null);
+    try {
+      await fetchApi<unknown>(`/models/${encodeURIComponent(id)}/promote`, { method: "POST" });
+      setModels(await fetchApi<RegisteredModel[]>("/models"));
+    } catch (e) {
+      setNotice({ kind: "error", text: messageOf(e, "Could not promote the model") });
+    }
   }
 
   return (
@@ -397,10 +457,12 @@ function ModelsTab() {
         <p className="text-sm" style={{ color: "var(--text-muted)" }}>
           ML model registry — train v2 models and promote to champion
         </p>
-        <p className="text-xs mt-1 font-mono px-2 py-1 rounded w-fit" style={{ background: "var(--surface-overlay)", color: "var(--text-faint)" }}>
+        <p className="text-xs mt-1 font-mono px-2 py-1 rounded-sm w-fit" style={{ background: "var(--surface-overlay)", color: "var(--text-faint)" }}>
           python -m workers.training.train_model --min-rows 200
         </p>
       </div>
+
+      <NoticeBar notice={notice} />
 
       {loading ? (
         <div className="text-sm" style={{ color: "var(--text-muted)" }}>
@@ -461,7 +523,7 @@ function ModelsTab() {
                   <button
                     onClick={() => promoteModel(m.id)}
                     className="text-xs px-3 py-1.5 rounded-md font-medium shrink-0"
-                    style={{ background: "var(--primary)", color: "#fff" }}
+                    style={{ background: "var(--primary-strong)", color: "#fff" }}
                   >
                     Promote to Champion
                   </button>
@@ -478,7 +540,7 @@ function ModelsTab() {
 function SettingsSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div
-      className="rounded-xl border overflow-hidden"
+      className="rounded-xl border overflow-x-auto"
       style={{ background: "var(--surface-raised)", borderColor: "var(--border)" }}
     >
       <div className="px-5 py-3 border-b" style={{ borderColor: "var(--border)" }}>
@@ -493,7 +555,7 @@ function SettingsSection({ title, children }: { title: string; children: React.R
   );
 }
 
-function SettingsRow({ label, value, secret }: { label: string; value: string; secret?: boolean }) {
+function SettingsRow({ label, value, warn }: { label: string; value: string; warn?: boolean }) {
   return (
     <div className="flex items-center justify-between px-5 py-3">
       <span className="text-sm" style={{ color: "var(--text-muted)" }}>
@@ -501,7 +563,7 @@ function SettingsRow({ label, value, secret }: { label: string; value: string; s
       </span>
       <span
         className="text-xs font-mono text-right max-w-sm"
-        style={{ color: secret ? "var(--text-faint)" : "var(--text)" }}
+        style={{ color: warn ? "var(--yellow)" : "var(--text)" }}
       >
         {value}
       </span>

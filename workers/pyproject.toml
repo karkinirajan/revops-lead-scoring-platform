@@ -1,21 +1,17 @@
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
 [project]
 name = "revops-workers"
 version = "0.1.0"
 description = "RevOps Lead Scoring Platform — Celery workers"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
-    "celery>=5.4.0",
-    "redis>=5.2.0",
-    "kombu>=5.4.0",
-    "structlog>=24.4.0",
-    "httpx>=0.28.0",
-    "psycopg2-binary>=2.9.10",
-    "sqlalchemy>=2.0.36",
+    # the workers import the API package (models, services, settings), so they depend on it as a workspace member
+    "revops-api[ml]",
+    "boto3",
 ]
 
-[tool.hatch.build.targets.wheel]
-packages = ["workers"]
+[tool.uv]
+# An application run from the repository root (`celery -A workers.celery_app worker`), not an installable package.
+package = false
+
+[tool.uv.sources]
+revops-api = { workspace = true }

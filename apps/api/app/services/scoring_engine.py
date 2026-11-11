@@ -4,6 +4,7 @@ Deterministic lead scoring engine — v1.
 Score is always a function of the same input feature vector + config version.
 Changing the config must bump SCORING_MODEL_VERSION in settings.
 """
+
 from __future__ import annotations
 
 import math
@@ -56,12 +57,6 @@ SCORE_CONFIG: dict[str, Any] = {
         "smb": 0.95,
         "unknown": 1.0,
     },
-    # Priority tier thresholds (score >= threshold → tier)
-    "thresholds": {
-        "hot": 75,
-        "warm": 50,
-        "cool": 25,
-    },
     # Recommended actions by tier
     "recommended_actions": {
         PriorityTier.HOT: "immediate_outreach",
@@ -75,6 +70,7 @@ SCORE_CONFIG: dict[str, Any] = {
 # ---------------------------------------------------------------------------
 # Input / output types
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class FeatureVector:
@@ -108,12 +104,12 @@ class ScoreResult:
 # Scoring logic
 # ---------------------------------------------------------------------------
 
+
 def _api_calls_score(api_calls_7d: int) -> tuple[int, str]:
     """Return (score, label) for API call volume using configured bands."""
     for band in SCORE_CONFIG["api_calls_7d_bands"]:
-        if band["max"] is None or api_calls_7d <= band["max"]:
-            if api_calls_7d >= band["min"]:
-                return band["score"], band["label"]
+        if (band["max"] is None or api_calls_7d <= band["max"]) and api_calls_7d >= band["min"]:
+            return band["score"], band["label"]
     return 0, "unknown"
 
 
@@ -135,13 +131,15 @@ def _size_multiplier(size_tier: str) -> float:
     return mults.get(size_tier.lower(), mults["unknown"])
 
 
-def _tier(score: int) -> str:
-    t = SCORE_CONFIG["thresholds"]
-    if score >= t["hot"]:
+def tier_for(score: int) -> str:
+    """The tier a score falls in. The boundaries are the SCORING_*_THRESHOLD settings (75, 50 and 25 by default), and the formula and the machine-learning
+    model both use this function, so they cannot disagree about them."""
+    s = get_settings()
+    if score >= s.scoring_hot_threshold:
         return PriorityTier.HOT
-    if score >= t["warm"]:
+    if score >= s.scoring_warm_threshold:
         return PriorityTier.WARM
-    if score >= t["cool"]:
+    if score >= s.scoring_cool_threshold:
         return PriorityTier.COOL
     return PriorityTier.COLD
 
@@ -160,25 +158,31 @@ def score_contact(features: FeatureVector) -> ScoreResult:
     contributions["api_calls_7d"] = api_score
 
     # 2. Web engagement
-    pv_score = min(features.page_views_7d * SCORE_CONFIG["page_views_7d"]["per_unit"],
-                   SCORE_CONFIG["page_views_7d"]["cap"])
+    pv_score = min(
+        features.page_views_7d * SCORE_CONFIG["page_views_7d"]["per_unit"], SCORE_CONFIG["page_views_7d"]["cap"]
+    )
     contributions["page_views_7d"] = pv_score
 
-    docs_score = min(features.docs_page_visits_7d * SCORE_CONFIG["docs_page_visits_7d"]["per_unit"],
-                     SCORE_CONFIG["docs_page_visits_7d"]["cap"])
+    docs_score = min(
+        features.docs_page_visits_7d * SCORE_CONFIG["docs_page_visits_7d"]["per_unit"],
+        SCORE_CONFIG["docs_page_visits_7d"]["cap"],
+    )
     contributions["docs_page_visits_7d"] = docs_score
 
-    sessions_score = min(features.sessions_7d * SCORE_CONFIG["sessions_7d"]["per_unit"],
-                         SCORE_CONFIG["sessions_7d"]["cap"])
+    sessions_score = min(
+        features.sessions_7d * SCORE_CONFIG["sessions_7d"]["per_unit"], SCORE_CONFIG["sessions_7d"]["cap"]
+    )
     contributions["sessions_7d"] = sessions_score
 
     # 3. Email engagement
-    clicks_score = min(features.email_clicks_7d * SCORE_CONFIG["email_clicks_7d"]["per_unit"],
-                       SCORE_CONFIG["email_clicks_7d"]["cap"])
+    clicks_score = min(
+        features.email_clicks_7d * SCORE_CONFIG["email_clicks_7d"]["per_unit"], SCORE_CONFIG["email_clicks_7d"]["cap"]
+    )
     contributions["email_clicks_7d"] = clicks_score
 
-    opens_score = min(features.email_opens_7d * SCORE_CONFIG["email_opens_7d"]["per_unit"],
-                      SCORE_CONFIG["email_opens_7d"]["cap"])
+    opens_score = min(
+        features.email_opens_7d * SCORE_CONFIG["email_opens_7d"]["per_unit"], SCORE_CONFIG["email_opens_7d"]["cap"]
+    )
     contributions["email_opens_7d"] = opens_score
 
     # 4. Intent signals
@@ -194,8 +198,10 @@ def score_contact(features: FeatureVector) -> ScoreResult:
     integration_score = SCORE_CONFIG["integration_connected"] if features.integration_connected else 0
     contributions["integration_connected"] = integration_score
 
-    int_count_score = min(features.integrations_count * SCORE_CONFIG["integrations_count"]["per_unit"],
-                          SCORE_CONFIG["integrations_count"]["cap"])
+    int_count_score = min(
+        features.integrations_count * SCORE_CONFIG["integrations_count"]["per_unit"],
+        SCORE_CONFIG["integrations_count"]["cap"],
+    )
     contributions["integrations_count"] = int_count_score
 
     # 5. Sum raw score
@@ -212,7 +218,7 @@ def score_contact(features: FeatureVector) -> ScoreResult:
     contributions["_company_size_multiplier"] = int(final_float - decayed)
 
     lead_score = max(0, min(100, math.floor(final_float)))
-    tier = _tier(lead_score)
+    tier = tier_for(lead_score)
 
     # Build human-readable reason
     top_signals = sorted(

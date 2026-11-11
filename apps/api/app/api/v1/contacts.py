@@ -4,11 +4,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import AnalystRequired, CurrentUser, ViewerRequired
+from app.auth.dependencies import AnalystRequired, ViewerRequired
 from app.database import get_db
-from app.models.contact import Contact, ContactFeature
+from app.models.contact import Contact
 from app.schemas.common import PaginatedResponse
 from app.schemas.contact import ContactCreate, ContactRead, ContactUpdate
+from app.services.search_utils import LIKE_ESCAPE, contains_pattern
 
 router = APIRouter()
 
@@ -20,7 +21,7 @@ def list_contacts(
     page_size: int = Query(50, ge=1, le=500),
     source_system: str | None = Query(None),
     lifecycle_stage: str | None = Query(None),
-    search: str | None = Query(None, description="Search by email or name"),
+    search: str | None = Query(None, max_length=200, description="Search by email or name"),
 ):
     q = select(Contact)
     if source_system:
@@ -28,11 +29,11 @@ def list_contacts(
     if lifecycle_stage:
         q = q.where(Contact.lifecycle_stage == lifecycle_stage)
     if search:
-        term = f"%{search.lower()}%"
+        term = contains_pattern(search.lower())
         q = q.where(
-            func.lower(Contact.email).like(term)
-            | func.lower(Contact.first_name).like(term)
-            | func.lower(Contact.last_name).like(term)
+            func.lower(Contact.email).like(term, escape=LIKE_ESCAPE)
+            | func.lower(Contact.first_name).like(term, escape=LIKE_ESCAPE)
+            | func.lower(Contact.last_name).like(term, escape=LIKE_ESCAPE)
         )
 
     total = db.scalar(select(func.count()).select_from(q.subquery()))
@@ -43,7 +44,7 @@ def list_contacts(
         total=total or 0,
         page=page,
         page_size=page_size,
-        pages=max(1, -(-( total or 0) // page_size)),
+        pages=max(1, -(-(total or 0) // page_size)),
     )
 
 

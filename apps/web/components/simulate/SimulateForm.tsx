@@ -23,10 +23,11 @@ const DEFAULTS: ScoreSimulateRequest = {
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-between py-2.5 border-b last:border-0" style={{ borderColor: "var(--border-muted)" }}>
-      <label className="text-sm" style={{ color: "var(--text-muted)" }}>{label}</label>
+    // The row is the label, so the control inside it is named by the text and a click on the text reaches the control
+    <label className="flex items-center justify-between py-2.5 border-b last:border-0" style={{ borderColor: "var(--border-muted)" }}>
+      <span className="text-sm" style={{ color: "var(--text-muted)" }}>{label}</span>
       {children}
-    </div>
+    </label>
   );
 }
 
@@ -38,7 +39,7 @@ function NumInput({ value, onChange, min = 0, max }: { value: number; onChange: 
       max={max}
       value={value}
       onChange={(e) => onChange(Number(e.target.value))}
-      className="w-20 px-2 py-1 rounded text-sm text-right border font-mono"
+      className="w-20 px-2 py-1 rounded-sm text-sm text-right border font-mono"
       style={{ background: "var(--surface-overlay)", borderColor: "var(--border)", color: "var(--text)" }}
     />
   );
@@ -48,13 +49,17 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (v: boolean
   return (
     <button
       type="button"
+      role="switch"
+      aria-checked={checked}
       onClick={() => onChange(!checked)}
-      className="w-10 h-5 rounded-full transition-colors relative"
-      style={{ background: checked ? "var(--primary)" : "var(--border)" }}
+      className="w-11 h-6 shrink-0 rounded-full border transition-colors relative focus-visible:ring-2 focus-visible:ring-primary"
+      // a border, not an inset shadow, marks the off state: an inline box-shadow would override the focus ring.
+      // (The dark --border colour alone is 1.3:1 against the card; --text-faint is 5.3:1.)
+      style={checked ? { background: "var(--primary)", borderColor: "transparent" } : { background: "var(--surface-overlay)", borderColor: "var(--text-faint)" }}
     >
       <span
-        className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all"
-        style={{ left: checked ? "calc(100% - 18px)" : "2px" }}
+        className="absolute top-[3px] w-4 h-4 rounded-full bg-white transition-all"
+        style={{ left: checked ? "calc(100% - 19px)" : "3px" }}
       />
     </button>
   );
@@ -130,7 +135,7 @@ export function SimulateForm() {
             <select
               value={form.company_size_tier}
               onChange={(e) => set("company_size_tier", e.target.value)}
-              className="px-2 py-1 rounded text-sm border"
+              className="px-2 py-1 rounded-sm text-sm border"
               style={{ background: "var(--surface-overlay)", borderColor: "var(--border)", color: "var(--text)" }}
             >
               {["unknown", "smb", "mid_market", "enterprise"].map((v) => (
@@ -146,7 +151,7 @@ export function SimulateForm() {
           type="submit"
           disabled={loading}
           className="w-full py-2 rounded-lg text-sm font-medium text-white disabled:opacity-60 transition-colors"
-          style={{ background: "var(--primary)" }}
+          style={{ background: "var(--primary-strong)" }}
         >
           {loading ? "Calculating…" : "Simulate Score"}
         </button>

@@ -8,8 +8,8 @@ from sqlalchemy import engine_from_config, pool
 # Add the api app to sys.path so models are importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from app.database import Base  # noqa: E402
 import app.models  # noqa: E402, F401 — import all models so Alembic sees them
+from app.database import Base  # noqa: E402
 
 config = context.config
 

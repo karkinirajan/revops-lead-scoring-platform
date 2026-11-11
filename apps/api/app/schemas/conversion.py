@@ -35,7 +35,7 @@ class TierAccuracy(OrmBase):
     tier: str
     total_leads: int
     converted: int
-    precision: float          # converted / total_leads in this tier
+    precision: float  # converted / total_leads in this tier
     avg_score: float
     avg_deal_value: float | None
     avg_days_to_close: float | None
@@ -52,6 +52,7 @@ class ModelAccuracyReport(OrmBase):
 
 class HubSpotDealWebhook(OrmBase):
     """Shape of a HubSpot deal-won webhook payload."""
+
     objectId: str = Field(..., description="HubSpot deal ID")
     propertyName: str | None = None
     propertyValue: str | None = None

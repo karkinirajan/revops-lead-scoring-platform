@@ -1,7 +1,7 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -24,20 +24,20 @@ class RawEvent(Base):
     # Timestamps from source and pipeline
     event_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     ingested_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False, index=True
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False, index=True
     )
 
     # Immutable payload
     raw_payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
     # Processing state
-    processed: Mapped[bool] = mapped_column(Integer, default=False, nullable=False, index=True)
+    processed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     processing_error: Mapped[str | None] = mapped_column(Text)
     retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     # Quarantine flag for schema-invalid records
-    quarantined: Mapped[bool] = mapped_column(Integer, default=False, nullable=False, index=True)
+    quarantined: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     quarantine_reason: Mapped[str | None] = mapped_column(Text)
 
     # Correlation
@@ -62,7 +62,7 @@ class WorkerCheckpoint(Base):
     meta: Mapped[dict | None] = mapped_column(JSONB)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
         nullable=False,
     )

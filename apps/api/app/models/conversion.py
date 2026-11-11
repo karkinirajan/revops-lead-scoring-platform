@@ -1,12 +1,17 @@
 """Conversion events — closed-loop feedback for model accuracy tracking."""
+
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+
+if TYPE_CHECKING:
+    from app.models.contact import Contact
 
 
 class Conversion(Base):
@@ -32,13 +37,13 @@ class Conversion(Base):
 
     # Outcome data
     converted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
-    deal_value: Mapped[float | None] = mapped_column(Float)          # USD
-    days_to_close: Mapped[int | None] = mapped_column(Integer)       # from first contact to close
-    plan_tier: Mapped[str | None] = mapped_column(String(50))        # starter | pro | enterprise
+    deal_value: Mapped[float | None] = mapped_column(Float)  # USD
+    days_to_close: Mapped[int | None] = mapped_column(Integer)  # from first contact to close
+    plan_tier: Mapped[str | None] = mapped_column(String(50))  # starter | pro | enterprise
 
     # Score snapshot at conversion — critical for calibration
     score_at_conversion: Mapped[int | None] = mapped_column(Integer)
-    tier_at_conversion: Mapped[str | None] = mapped_column(String(10))
+    tier_at_conversion: Mapped[str | None] = mapped_column(String(10), index=True)
     model_version_at_conversion: Mapped[str | None] = mapped_column(String(20))
 
     # Source of this conversion event
@@ -49,8 +54,8 @@ class Conversion(Base):
     extra: Mapped[dict | None] = mapped_column(JSONB)
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
 
     # Relationships
-    contact: Mapped["Contact"] = relationship("Contact")  # noqa: F821
+    contact: Mapped["Contact"] = relationship("Contact")

@@ -1,7 +1,18 @@
 from fastapi import APIRouter
 
-from app.api.v1 import analytics, auth, companies, contacts, ingest, integrations, model_registry, scoring, webhooks
-from app.api.v1 import intelligence
+from app.api.v1 import (
+    analytics,
+    auth,
+    companies,
+    contacts,
+    ingest,
+    integrations,
+    intelligence,
+    model_registry,
+    scoring,
+    system,
+    webhooks,
+)
 
 router = APIRouter(prefix="/api/v1")
 
@@ -14,5 +25,6 @@ router.include_router(analytics.router, prefix="/analytics", tags=["analytics"])
 router.include_router(webhooks.router, prefix="/webhooks", tags=["webhooks"])
 router.include_router(model_registry.router, prefix="/models", tags=["models"])
 router.include_router(integrations.router, prefix="/integrations", tags=["integrations"])
+router.include_router(system.router, prefix="/system", tags=["system"])
 # Intelligence routes are mounted at root /api/v1 to keep paths clean
 router.include_router(intelligence.router, tags=["intelligence"])

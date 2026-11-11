@@ -6,33 +6,52 @@ Endpoints:
   GET  /contacts/{id}/intelligence/sync    — non-streaming version (cacheable)
   POST /leads/search                       — natural language query → filtered leads
 """
+
 from __future__ import annotations
 
+import contextlib
+import json
 from typing import Annotated
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from pydantic import Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import AnalystRequired, CurrentUser, ViewerRequired
+from app.auth.dependencies import ViewerRequired
 from app.config import get_settings
 from app.database import get_db
-from app.models.contact import Contact, ContactFeature
+from app.middleware.rate_limit import limiter
 from app.models.company import Company
+from app.models.contact import Contact, ContactFeature
 from app.models.scoring import LeadScore
 from app.schemas.common import OrmBase
 from app.schemas.scoring import RankedLeadRead
 from app.services.ai_intelligence import (
+    GENERIC_ERROR,
     get_lead_intelligence,
     natural_language_search,
     stream_lead_intelligence,
 )
+from app.services.search_utils import LIKE_ESCAPE, contains_pattern
 
 router = APIRouter()
 logger = structlog.get_logger(__name__)
 settings = get_settings()
+
+AI_LIMIT = (
+    f"{settings.ai_intelligence_rate_limit_per_minute}/minute"  # each call is paid for: limited per client address
+)
+CACHE_SECONDS = settings.ai_intelligence_cache_ttl_seconds
+
+
+def _cache():
+    """A Redis client for the report cache. Short timeouts: a dead Redis must not slow requests (callers treat any error as a cache miss)."""
+    import redis
+
+    return redis.from_url(settings.redis_url, socket_connect_timeout=1, socket_timeout=1)
 
 
 def _get_api_key() -> str:
@@ -52,9 +71,7 @@ def _fetch_lead_context(contact_id: str, db: Session) -> tuple[dict, dict, dict]
         raise HTTPException(status_code=404, detail="Contact not found")
 
     company = db.get(Company, contact.company_id) if contact.company_id else None
-    features = db.scalar(
-        select(ContactFeature).where(ContactFeature.contact_id == contact_id)
-    )
+    features = db.scalar(select(ContactFeature).where(ContactFeature.contact_id == contact_id))
     latest_score = db.scalar(
         select(LeadScore)
         .where(LeadScore.contact_id == contact_id, LeadScore.is_shadow == False)  # noqa: E712
@@ -101,7 +118,9 @@ def _fetch_lead_context(contact_id: str, db: Session) -> tuple[dict, dict, dict]
 
 
 @router.get("/contacts/{contact_id}/intelligence", dependencies=[ViewerRequired])
+@limiter.limit(AI_LIMIT)
 async def stream_intelligence(
+    request: Request,
     contact_id: str,
     db: Annotated[Session, Depends(get_db)],
 ):
@@ -133,52 +152,54 @@ async def stream_intelligence(
 
 
 @router.get("/contacts/{contact_id}/intelligence/sync", dependencies=[ViewerRequired])
+@limiter.limit(AI_LIMIT)
 async def get_intelligence_sync(
+    request: Request,
     contact_id: str,
     db: Annotated[Session, Depends(get_db)],
 ):
     """Non-streaming intelligence report. Response cached 6 hours in Redis (if available)."""
     api_key = _get_api_key()
 
-    # Try Redis cache first
+    contact_dict, features_dict, score_dict = _fetch_lead_context(
+        contact_id, db
+    )  # 404 for an unknown contact before anything is cached or paid for
+
     cache_key = f"intelligence:{contact_id}"
     try:
-        import redis
-        r = redis.from_url(settings.redis_url)
-        cached = r.get(cache_key)
+        cached = _cache().get(cache_key)
         if cached:
-            import json
             return json.loads(cached)
     except Exception:
         pass
 
-    contact_dict, features_dict, score_dict = _fetch_lead_context(contact_id, db)
-    result = await get_lead_intelligence(
-        contact=contact_dict,
-        features=features_dict,
-        latest_score=score_dict,
-        api_key=api_key,
-    )
-
-    # Cache for 6 hours
     try:
-        import redis, json
-        r = redis.from_url(settings.redis_url)
-        r.setex(cache_key, 21600, json.dumps(result))
-    except Exception:
-        pass
+        result = await get_lead_intelligence(
+            contact=contact_dict,
+            features=features_dict,
+            latest_score=score_dict,
+            api_key=api_key,
+        )
+    except Exception as exc:
+        logger.error("ai_intelligence_failed", error=str(exc), error_type=type(exc).__name__)
+        raise HTTPException(status_code=502, detail=GENERIC_ERROR) from None
+
+    with contextlib.suppress(Exception):  # the cache is optional
+        _cache().setex(cache_key, CACHE_SECONDS, json.dumps(result))
 
     return result
 
 
 class NLSearchRequest(OrmBase):
-    query: str
-    page: int = 1
-    page_size: int = 50
+    query: str = Field(min_length=1, max_length=500)
+    page: int = Field(default=1, ge=1, le=10_000)
+    page_size: int = Field(default=50, ge=1, le=200)
 
 
 @router.post("/leads/search", dependencies=[ViewerRequired])
+@limiter.limit(AI_LIMIT)
 async def natural_language_leads_search(
+    request: Request,
     body: NLSearchRequest,
     db: Annotated[Session, Depends(get_db)],
 ):
@@ -191,15 +212,21 @@ async def natural_language_leads_search(
     api_key = _get_api_key()
 
     # Parse NL query → structured filters
-    parsed = await natural_language_search(body.query, api_key)
-    filters = parsed.get("filters", {})
+    try:
+        parsed = await natural_language_search(body.query, api_key)
+    except Exception as exc:
+        logger.error("ai_search_failed", error=str(exc), error_type=type(exc).__name__)
+        raise HTTPException(status_code=502, detail=GENERIC_ERROR) from None
+    filters = parsed.get("filters", {})  # already validated: known fields, right types, in range
 
     # Build query from parsed filters
-    from sqlalchemy import func, text
-    from app.schemas.scoring import RankedLeadRead
+    from sqlalchemy import func
 
+    # The latest *live* score per contact. A newer shadow score must not hide it: the shadow model scores alongside the live one, and the live rows are
+    # the ones selected below.
     latest = (
         select(LeadScore.contact_id, func.max(LeadScore.scored_at).label("max_scored_at"))
+        .where(LeadScore.is_shadow == False)  # noqa: E712
         .group_by(LeadScore.contact_id)
         .subquery()
     )
@@ -223,7 +250,7 @@ async def natural_language_leads_search(
     if filters.get("company_size_tier"):
         q = q.where(Company.size_tier == filters["company_size_tier"])
     if filters.get("industry_contains"):
-        q = q.where(Company.industry.ilike(f"%{filters['industry_contains']}%"))
+        q = q.where(Company.industry.ilike(contains_pattern(filters["industry_contains"]), escape=LIKE_ESCAPE))
     if filters.get("pricing_page_visited") is not None:
         q = q.where(ContactFeature.pricing_page_visited == filters["pricing_page_visited"])
     if filters.get("demo_requested") is not None:

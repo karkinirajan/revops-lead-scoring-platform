@@ -151,3 +151,7 @@ Desktop.ini
 tmp/
 temp/
 scratch/
+
+# Web (Next.js)
+apps/web/coverage/
+apps/web/next-env.d.ts
